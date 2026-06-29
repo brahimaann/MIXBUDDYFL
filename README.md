@@ -26,18 +26,23 @@ You + audio file
 mixing-assistant SKILL  (intent -> which tools -> interpret -> advise)
       |
       v
-audio-mixing-analyzer MCP SERVER  (6 DSP tools)
+audio-mixing-analyzer MCP SERVER  (6 DSP tools + 2 memory tools)
       |
       v
 dsp.py  (scipy/numpy: STFT, K-weighting LUFS, resonance detection, phase)
+memory.py  (per-project context: reference artists, target LUFS, history)
 ```
 
 - `mcp_server/dsp.py` - pure, tested DSP functions.
-- `mcp_server/server.py` - MCP tool layer (stdio).
+- `mcp_server/memory.py` - per-project memory (atomic JSON store).
+- `mcp_server/server.py` - MCP tool layer (stdio), progressive disclosure.
 - `skill/SKILL.md` + `skill/references/` - the reasoning layer & knowledge base.
-- `tests/` - DSP unit tests, MCP e2e tests, and a workflow demo.
+- `tests/` - DSP unit tests, memory tests, MCP e2e tests, and a workflow demo.
 
 ## MCP tools
+
+Analysis tools return a compact **overview** (with a one-line `summary`) by
+default; pass `include` to expand detail (e.g. `include="bands,resonances"`).
 
 | Tool | Returns |
 |------|---------|
@@ -47,6 +52,8 @@ dsp.py  (scipy/numpy: STFT, K-weighting LUFS, resonance detection, phase)
 | `analyze_vocal_clarity` | Mud/clarity/sibilance indices + EQ moves |
 | `analyze_stereo_compatibility` | Correlation, phase, mono safety |
 | `compare_to_reference` | Loudness + spectral diff vs a reference |
+| `read_project_memory` | Recall stored project context |
+| `write_project_memory` | Persist project context (read-then-replace) |
 
 ## Setup
 
@@ -61,7 +68,8 @@ pointing it at `mcp_server/server.py`.
 
 ```
 python tests/test_dsp.py        # 25 DSP unit tests (synthetic ground truth)
-python tests/test_mcp_e2e.py    # 8 end-to-end MCP protocol tests
+python tests/test_memory.py     # 16 project-memory unit tests
+python tests/test_mcp_e2e.py    # 14 end-to-end MCP protocol tests
 python tests/demo_workflow.py   # human-readable workflow demo
 ```
 
