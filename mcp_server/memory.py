@@ -19,7 +19,7 @@ import tempfile
 import time
 
 # All projects live in one JSON file: {project_name: {content..., _updated_at}}.
-_STORE_DIR = os.path.join(os.path.expanduser("~"), ".mixing-assistant")
+_STORE_DIR = os.path.join(os.path.expanduser("~"), ".mix-buddy")
 _STORE_PATH = os.path.join(_STORE_DIR, "memory.json")
 
 # A gentle template so a brand-new project advertises the fields that matter.

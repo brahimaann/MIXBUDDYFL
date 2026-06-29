@@ -1,4 +1,4 @@
-# Mixing Assistant - Project Summary
+# Mix Buddy - Project Summary
 
 _Last updated: 2026-06-29_
 
@@ -33,7 +33,7 @@ scipy/numpy DSP, then fixed its bugs (see section 6).
 You + an audio file (WAV/AIFF/FLAC/OGG)
       |
       v
-mixing-assistant SKILL          intent -> pick tools -> interpret -> advise
+mix-buddy SKILL          intent -> pick tools -> interpret -> advise
   (SKILL.md + references/)       teaches Claude how to reason about mixing
       |
       v
@@ -195,7 +195,7 @@ Full notes: `docs/producer-pal-architecture.md`.
 ## 11. Repository layout
 
 ```
-mixing-assistant/
+mix-buddy/
   README.md                      quick start + tool table
   PROJECT_SUMMARY.md             this document
   requirements.txt               numpy, scipy, soundfile, mcp

@@ -1,4 +1,4 @@
-# Mixing Assistant
+# Mix Buddy
 
 An LLM-powered music mixing assistant: a Claude **skill** + a custom **MCP
 server** that analyzes real audio files and gives concrete, parameter-level
@@ -23,7 +23,7 @@ into plain-language diagnosis + ordered fixes, explaining the *why* each time.
 You + audio file
       |
       v
-mixing-assistant SKILL  (intent -> which tools -> interpret -> advise)
+mix-buddy SKILL  (intent -> which tools -> interpret -> advise)
       |
       v
 audio-mixing-analyzer MCP SERVER  (6 DSP tools + 2 memory tools)
@@ -62,7 +62,7 @@ pip install -r requirements.txt
 ```
 
 Register the server with your MCP client (see `skill/references/setup.md`),
-pointing it at `mcp_server/server.py`.
+pointing it at `mcp_server/server.py` and restart your client.
 
 ## Run the tests
 
