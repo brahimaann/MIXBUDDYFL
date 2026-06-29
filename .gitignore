@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# Audio test artifacts
+*_dsp_test_*.wav
+_mcp_e2e_*.wav
+
+# OS
+Thumbs.db
+.DS_Store
