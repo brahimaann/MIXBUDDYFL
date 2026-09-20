@@ -69,6 +69,23 @@ presence boost -> de-ess. Subtractive before additive.
 
 ---
 
+## From `analyze_noise_gate`
+
+| Reading | Diagnosis | Action |
+|---------|-----------|--------|
+| gaps_detected_count = 0 | No clear pauses found, or already silent between phrases | Nothing to gate. |
+| breath_bleed_detected = true | Gap level sits well above the true noise floor and well below the phrase level - breath/room noise/hiss is leaking through the pauses | Apply `gate_suggestion` (threshold/ratio/range/attack/hold/release); if `sidechain_highpass_hz` is set, high-pass the gate's *detector*, not the audio. |
+| breath_bleed_detected = false, gaps_detected_count > 0 | Gaps already close cleanly | No gating needed; don't add one just because the tool ran. |
+| gate_suggestion.release_ms close to median_gap_duration_ms | Release barely fits inside the gap - risk of not fully closing before the next phrase | Favor the shorter end of the suggested range. |
+
+The single most common fix for "breath bleeding through between phrases" is
+release time, not threshold - see `gating_and_expansion.md` for the full
+diagnostic order (release -> range/ratio -> sidechain filter -> threshold
+last) and why threshold-first tends to clip quiet word onsets instead of
+fixing the actual leak.
+
+---
+
 ## From `analyze_stereo_compatibility`
 
 | Reading | Diagnosis | Action |
@@ -81,13 +98,29 @@ presence boost -> de-ess. Subtractive before additive.
 
 ---
 
+## Before you reach for any of this
+
+Every table above prescribes *processing*. Check first whether the problem is
+balance, panning or arrangement — "muddy", "buried", "cluttered" and "not
+wide enough" usually are. A fader move, a pan move or muting a competing part
+beats a filter, costs nothing, and can't introduce artifacts. See
+`static_mix_workflow.md`.
+
+Also note: a well-balanced full mix on an analyzer is **not a flat line**. It's
+a gently sloping curve from around 60 Hz falling toward the top end. Don't
+push a user toward a flat spectrum.
+
+---
+
 ## Reference cleanup chain order (general "fix my mix")
 
 1. **Gain staging** - get levels sane (peaks not clipping, healthy RMS).
-2. **Loudness** - note where you are vs target; don't maximize yet.
-3. **Stereo/phase** - fix polarity and sub-bass mono first (foundation).
-4. **Subtractive EQ** - remove mud/boxiness/resonances (clean).
-5. **Dynamics** - compress for control and consistency.
-6. **Additive EQ** - presence and air (enhance).
-7. **FX** - reverb/delay for depth (last).
-8. **Re-check** - re-run analysis to confirm the numbers moved the right way.
+2. **Gate/expand** - close up breath/noise between phrases before anything
+   else amplifies it (compression in particular will pull noise floor up).
+3. **Loudness** - note where you are vs target; don't maximize yet.
+4. **Stereo/phase** - fix polarity and sub-bass mono first (foundation).
+5. **Subtractive EQ** - remove mud/boxiness/resonances (clean).
+6. **Dynamics** - compress for control and consistency.
+7. **Additive EQ** - presence and air (enhance).
+8. **FX** - reverb/delay for depth (last).
+9. **Re-check** - re-run analysis to confirm the numbers moved the right way.

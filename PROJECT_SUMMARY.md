@@ -1,6 +1,6 @@
 # Mix Buddy - Project Summary
 
-_Last updated: 2026-06-29_
+_Last updated: 2026-09-20_
 
 A complete, tested **LLM music-mixing assistant** for a music producer. It pairs
 a Claude **skill** (the reasoning/knowledge layer) with a custom **MCP server**
@@ -37,7 +37,7 @@ mix-buddy SKILL          intent -> pick tools -> interpret -> advise
   (SKILL.md + references/)       teaches Claude how to reason about mixing
       |
       v
-audio-mixing-analyzer MCP SERVER (stdio)   6 DSP tools + 2 memory tools
+audio-mixing-analyzer MCP SERVER (stdio)   7 DSP tools + 2 memory tools
   (mcp_server/server.py)         validation, progressive disclosure, summaries
       |
       v
@@ -51,7 +51,7 @@ server layer only validates input, shapes responses, and serializes JSON.
 
 ---
 
-## 3. The MCP tools (8 total)
+## 3. The MCP tools (9 total)
 
 Analysis tools return a compact **overview** plus a one-line human-readable
 `summary`. Pass the optional `include` argument (comma-separated) to expand the
@@ -64,6 +64,7 @@ heavy detail blocks only when needed - this keeps token usage low.
 | `analyze_frequency_spectrum` | centroid, top 3 resonances | `bands`, `resonances` |
 | `analyze_vocal_clarity` | clarity/mud/sibilance + EQ moves | `raw` |
 | `analyze_stereo_compatibility` | correlation, phase, mono safety | `detail` |
+| `analyze_noise_gate` | breath-bleed detection + gate settings | `levels` |
 | `compare_to_reference` | loudness + spectral diff vs reference | `all_bands` |
 | `read_project_memory` | stored project context | - |
 | `write_project_memory` | persists context (read-then-replace) | - |
@@ -89,6 +90,10 @@ Example summaries the tools actually produce:
   concrete EQ/de-ess suggestions.
 - **Stereo/phase:** correlation coefficient, interchannel delay via GCC-PHAT,
   and sub-150 Hz phase correlation to flag bass cancellation / mono risk.
+- **Noise gate / breath bleed:** short-term RMS envelope split into active vs.
+  gap windows (adaptive threshold), gap segments merged and measured against
+  the file's true noise floor; flags breath/room-noise bleed and derives
+  threshold/ratio/range/attack/hold/release + sidechain-HPF suggestions.
 
 ---
 
@@ -103,8 +108,25 @@ Why -> Listen for).
 - `frequency_guide.md` - what every frequency range means (mud, presence, air...).
 - `diagnostic_map.md` - metric -> action lookup table.
 - `techniques.md` - chain order, compression starting points by source, effect
-  recipes including the **Brent Faiyaz** higher/airier vocal pitch+formant move.
-- `setup.md` - how to register the MCP server.
+  recipes including the **Brent Faiyaz** higher/airier vocal pitch+formant
+  move, and named recipes for a concrete vocal-chain template + master chain.
+- `gating_and_expansion.md` - gate/expander theory, the breath-bleed
+  diagnostic order (release time first, then range/ratio, then sidechain
+  filter, threshold last), and the gate's other uses (bleed, gated reverb).
+- `static_mix_workflow.md` - process before plugins: gain staging, building a
+  balance from one element, two-pass/punch-list method, automation rules
+  ("free the fader"), referencing and reading an analyzer curve.
+- `stereo_and_space.md` - panning strategy, Haas/short-delay widening,
+  reverb/delay send architecture, Gibson's spheres/lines/rooms.
+- `setup.md` - how to register the MCP server (Claude Code, Claude Desktop,
+  Jcode CLI).
+
+The last two were distilled from ~82k words of professional mixing
+transcripts (a full three-day band mix, an Ableton pop/rap vocal mix, a
+hip-hop masterclass, an Afrobeat vocal mix, and David Gibson's *Art of
+Mixing*). Techniques that appeared in more than one independent source were
+prioritized - e.g. de-essing the reverb send, stacking many light processing
+stages, and riding levels before compression.
 
 The skill now also teaches **progressive disclosure** (when to use `include`)
 and **project memory** (read-then-replace continuity across sessions).
@@ -124,7 +146,7 @@ The chosen research code had real DSP but several bugs we corrected:
 ## 7. Project memory (new)
 
 `mcp_server/memory.py` persists per-project context to
-`~/.mixing-assistant/memory.json` (atomic temp-file + replace, never corrupts).
+`~/.mix-buddy/memory.json` (atomic temp-file + replace, never corrupts).
 
 - Fields: `reference_artists`, `target_lufs`, `recurring_problems`, `notes`
   (extra fields allowed).
@@ -141,12 +163,12 @@ target is -9 LUFS, reference is Brent Faiyaz, you tend to get boxy low-mids."
 
 | Suite | Count | What it checks |
 |-------|-------|----------------|
-| `tests/test_dsp.py` | 25 | DSP math vs synthetic audio with known ground truth |
+| `tests/test_dsp.py` | 33 | DSP math vs synthetic audio with known ground truth |
 | `tests/test_memory.py` | 16 | memory round-trip, replace-not-merge, isolation, corruption |
-| `tests/test_mcp_e2e.py` | 14 | full MCP protocol: lists 8 tools, overview vs `include`, memory |
+| `tests/test_mcp_e2e.py` | 17 | full MCP protocol: lists 9 tools, overview vs `include`, memory |
 | `tests/demo_workflow.py` | - | human-readable demo; detects planted mud + sibilance |
 
-**Total: 55 automated assertions passing.** The demo plants a 320 Hz mud peak
+**Total: 66 automated assertions passing.** The demo plants a 320 Hz mud peak
 and 7 kHz sibilance and confirms the pipeline detects and prescribes fixes.
 
 Run them:
@@ -157,19 +179,28 @@ python tests/test_mcp_e2e.py
 python tests/demo_workflow.py
 ```
 
-(Note: tests are standalone scripts using their own pass/fail runner and a
-module-level `sys.exit`, so they are not run via `pytest` directly.)
+(Note: tests are standalone scripts with their own pass/fail runner - run them
+directly, as above. Their `sys.exit` is `__main__`-guarded, so an accidental
+`pytest tests/` no longer dies with INTERNALERROR; it just collects nothing.)
 
 ---
 
 ## 9. Installation state
 
-- Skill installed at `~/.jcode/skills/mixing-assistant/` (SKILL.md + references)
-  and registered in `_index.json`.
-- MCP server registered in `~/.jcode/mcp_servers.json` as
-  `audio-mixing-analyzer` (`python .../mcp_server/server.py`). Config was backed
-  up before editing and validated as JSON.
-- The user already runs `livepilot` (Ableton control, port 9001) alongside it.
+- Skill installed at `~/.jcode/skills/mix-buddy/` (SKILL.md + references,
+  kept byte-identical to this repo's `skill/`) and registered in `_index.json`.
+  The old `mixing-assistant` duplicate (unregistered, identical content) has
+  been deleted.
+- MCP server registered in **two** places, both pointing at this repo's
+  `mcp_server/server.py`:
+  - `~/.jcode/mcp_servers.json` as `audio-mixing-analyzer` (Jcode CLI).
+  - Claude Code's own user-scope MCP config, via
+    `claude mcp add --scope user audio-mixing-analyzer -- python "...\mcp_server\server.py"`
+    (verified with `claude mcp list` -> Connected). Takes effect in new
+    Claude Code sessions only - a server registered mid-session isn't picked
+    up by that session's already-fixed tool list.
+- The user already runs `livepilot` (Ableton control, port 9001) and
+  **Producer Pal** (Ableton control, port 3350) alongside it.
 
 ---
 
@@ -208,13 +239,13 @@ mix-buddy/
     server.py                    MCP tool layer (stdio)
   skill/
     SKILL.md                     reasoning/operating manual
-    references/                  frequency guide, diagnostic map, techniques, setup
+    references/                  frequency guide, diagnostic map, techniques,
+                                  gating_and_expansion, setup
   tests/
-    test_dsp.py                  25 DSP unit tests
+    test_dsp.py                  33 DSP unit tests
     test_memory.py               16 memory unit tests
-    test_mcp_e2e.py              14 end-to-end MCP tests
+    test_mcp_e2e.py              17 end-to-end MCP tests
     demo_workflow.py             human-readable demo
-    test_imports.py              import sanity check
 ```
 
 ---

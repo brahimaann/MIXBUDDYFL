@@ -1,6 +1,6 @@
 ---
 name: mix-buddy
-description: When the user wants help mixing music, mixing vocals, or improving the sound of an audio track. Use when the user mentions "mixing," "mix my vocal," "vocal clarity," "make my vocal clearer," "compression settings," "EQ settings," "my mix sounds muddy," "harsh vocals," "sibilance," "de-essing," "my track is too quiet," "LUFS," "loudness," "stereo width," "phase issues," "mono compatibility," "reference track," "make it sound like [artist]," "how do I mix," "what compression should I use," or shares an audio file and asks how to improve it. Pairs with the audio-mixing-analyzer MCP server to analyze real audio files and give concrete, parameter-level recommendations grounded in professional mixing practice.
+description: When the user wants help mixing music, mixing vocals, or improving the sound of an audio track. Use when the user mentions "mixing," "mix my vocal," "vocal clarity," "make my vocal clearer," "compression settings," "EQ settings," "my mix sounds muddy," "harsh vocals," "sibilance," "de-essing," "my track is too quiet," "LUFS," "loudness," "stereo width," "phase issues," "mono compatibility," "reference track," "make it sound like [artist]," "how do I mix," "what compression should I use," "noise gate," "gate settings," "expander," "breath noise," "breath bleeding through," "gate isn't closing," or shares an audio file and asks how to improve it. Pairs with the audio-mixing-analyzer MCP server to analyze real audio files and give concrete, parameter-level recommendations grounded in professional mixing practice.
 metadata:
   version: 1.0.0
 ---
@@ -39,6 +39,7 @@ Classify the user's intent into one or more of:
 - **Dynamics / compression / "uneven", "punch"** -> dynamics analysis
 - **Loudness / "too quiet", "too loud", streaming** -> loudness analysis
 - **Width / phase / "mono", "disappears"** -> stereo compatibility
+- **Noise gate / expander / "breath noise between phrases", "gate isn't closing"** -> noise gate analysis
 - **"Sound like [reference]"** -> reference comparison
 - **General "improve my mix"** -> run the full cleanup chain (see below)
 
@@ -57,6 +58,7 @@ Map intent -> tool (call only what's relevant; don't run everything):
 | Tonal balance / problem frequencies | `analyze_frequency_spectrum` |
 | Vocal clarity / mud / sibilance | `analyze_vocal_clarity` |
 | Width / phase / mono | `analyze_stereo_compatibility` |
+| Noise gate / expander / breath bleed | `analyze_noise_gate` |
 | Match a reference | `compare_to_reference` |
 | Recall project settings/history | `read_project_memory` |
 | Save project settings/history | `write_project_memory` |
@@ -73,6 +75,7 @@ the full data (every band, every resonance, raw level fields) pass the optional
 | `analyze_frequency_spectrum` | `bands`, `resonances` (comma-separate both) |
 | `analyze_vocal_clarity` | `raw` (fundamental warmth dB) |
 | `analyze_stereo_compatibility` | `detail` (delay, sub phase, risk) |
+| `analyze_noise_gate` | `levels` (active/noise-floor/gap dBFS) |
 | `compare_to_reference` | `all_bands` (include matching bands too) |
 
 For a general "improve my whole mix" request, run the **cleanup chain** in
@@ -107,11 +110,20 @@ Structure the answer:
 
 ## Knowledge Base
 
-Use `references/frequency_guide.md` for the meaning of every frequency range
-(mud, boxiness, presence, air, etc.) and `references/diagnostic_map.md` for the
-metric -> action lookup table. Use `references/techniques.md` for chain order,
-compression starting points by source, and effect recipes (including
-pitch/formant moves like the "Brent Faiyaz" higher, airier vocal sound).
+| Reference | What's in it |
+|---|---|
+| `references/frequency_guide.md` | What every frequency range means (mud, boxiness, presence, air), the 3D mental model, the six volume levels, spectrum-scanning technique. |
+| `references/diagnostic_map.md` | Metric -> diagnosis -> action lookup for every MCP tool. |
+| `references/techniques.md` | Chain order, compression starting points by source, chain-order refinements, saturation stacking, effect recipes (incl. the "Brent Faiyaz" pitch/formant move), and named recipes for a full vocal-chain template and master chain. |
+| `references/static_mix_workflow.md` | **Process before plugins**: gain staging, building a balance from one element, passes and punch lists, automation rules, referencing. |
+| `references/stereo_and_space.md` | Panning strategy, making mono sources wide (Haas/short-delay), reverb and delay send architecture. |
+| `references/gating_and_expansion.md` | Gate/expander theory and the breath-bleed diagnostic order (release first, then range/ratio, then sidechain filter, threshold last). |
+
+**Reach for `static_mix_workflow.md` early.** When a user asks which plugin or
+what settings, check first whether the problem is actually balance,
+arrangement or panning — most "muddy/buried/cluttered" complaints are, and a
+fader move or a mute is a better answer than a filter. Only move to the
+processing references once balance is genuinely the limiting factor.
 
 ## Important Honesty Rules
 
@@ -128,4 +140,5 @@ pitch/formant moves like the "Brent Faiyaz" higher, airier vocal sound).
 
 If the MCP tools are not available, tell the user to add the server to their
 MCP config (see `references/setup.md`) and point them at
-`mixing-assistant/mcp_server/server.py`.
+`mix-buddy/mcp_server/server.py`. For a Claude Code CLI session specifically,
+the fastest path is `claude mcp add --scope user audio-mixing-analyzer -- python "<absolute path to>\mix-buddy\mcp_server\server.py"`, then start a new session.
