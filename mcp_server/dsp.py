@@ -452,6 +452,129 @@ def analyze_vocal_clarity_metrics(mono: np.ndarray, fs: int) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Noise gate / expander: inter-phrase gap analysis, breath bleed
+# ---------------------------------------------------------------------------
+def analyze_gate_settings_metrics(mono: np.ndarray, fs: int) -> dict:
+    """
+    Find pauses between phrases (gaps) and measure what's left in them.
+
+    A short-term RMS envelope (20 ms windows, 10 ms hop) is split into
+    "active" (phrase) and "gap" (pause) windows using an adaptive threshold
+    derived from the file's own loud/quiet spread, then adjacent gap windows
+    are merged into segments. Segments shorter than 100 ms are discarded
+    (those are within-phrase micro-gaps between syllables, not the pauses a
+    gate needs to act on between phrases).
+
+    Breath/noise bleed is flagged when the gap segments sit noticeably above
+    the file's true noise floor (the quietest windows overall) while still
+    well below the active/phrase level -- i.e. the gate (real or hypothetical)
+    isn't closing all the way down, so something audible (breath, room tone,
+    hiss) is passing through during the pause.
+
+    Returns a dict with noise_floor_dbfs, gap_level_dbfs, active_level_dbfs,
+    breath_bleed_db, breath_bleed_detected, median_gap_duration_ms, and a
+    gate_suggestion block (threshold/ratio/range/attack/hold/release/
+    sidechain_highpass_hz), or {"error": ...} if the signal is too short to
+    find any gaps.
+    """
+    win = max(1, int(0.02 * fs))  # 20 ms
+    hop = max(1, int(0.01 * fs))  # 10 ms
+    n_win = (len(mono) - win) // hop + 1
+    if n_win < 10:
+        return {"error": "Audio too short for gate/gap analysis."}
+
+    st_rms_db = np.empty(n_win, dtype=np.float64)
+    for i in range(n_win):
+        start = i * hop
+        seg = mono[start : start + win]
+        st_rms_db[i] = _to_db(float(np.sqrt(np.mean(seg ** 2) + 1e-12)))
+
+    # Adaptive split: windows louder than the midpoint between the file's
+    # quiet and loud extremes are "active"; the rest are candidate gaps.
+    loud_ref = float(np.percentile(st_rms_db, 90))
+    quiet_ref = float(np.percentile(st_rms_db, 10))
+    split = quiet_ref + (loud_ref - quiet_ref) * 0.5
+    is_gap = st_rms_db < split
+
+    # Merge contiguous gap windows into segments; keep those >= 100 ms.
+    min_gap_windows = max(1, int(0.1 * fs / hop))
+    segments = []  # list of (start_idx, end_idx_exclusive)
+    i = 0
+    while i < n_win:
+        if is_gap[i]:
+            j = i
+            while j < n_win and is_gap[j]:
+                j += 1
+            if (j - i) >= min_gap_windows:
+                segments.append((i, j))
+            i = j
+        else:
+            i += 1
+
+    active_level_dbfs = round(float(np.mean(st_rms_db[~is_gap])), 1) if np.any(~is_gap) else round(loud_ref, 1)
+    noise_floor_dbfs = round(float(np.percentile(st_rms_db, 1)), 1)
+
+    if not segments:
+        return {
+            "gaps_detected_count": 0,
+            "active_level_dbfs": active_level_dbfs,
+            "noise_floor_dbfs": noise_floor_dbfs,
+            "gap_level_dbfs": None,
+            "breath_bleed_db": None,
+            "breath_bleed_detected": False,
+            "median_gap_duration_ms": None,
+            "gate_suggestion": None,
+        }
+
+    seg_levels = [float(np.mean(st_rms_db[a:b])) for a, b in segments]
+    seg_durations_ms = [round((b - a) * hop / fs * 1000.0, 1) for a, b in segments]
+    gap_level_dbfs = round(float(np.median(seg_levels)), 1)
+    median_gap_ms = float(np.median(seg_durations_ms))
+
+    breath_bleed_db = round(gap_level_dbfs - noise_floor_dbfs, 1)
+    # Bleed is only a real problem if the gap is well clear of the true floor
+    # (something audible is there) AND well clear of the phrase level (it's
+    # genuinely a pause, not just a quiet word).
+    headroom_to_active = active_level_dbfs - gap_level_dbfs
+    breath_bleed_detected = bool(breath_bleed_db > 8.0 and headroom_to_active > 15.0)
+
+    # --- Gate suggestion ------------------------------------------------
+    threshold_db = round(max(noise_floor_dbfs + 6.0, gap_level_dbfs + 3.0), 1)
+    threshold_db = round(min(threshold_db, active_level_dbfs - 10.0), 1)
+    range_db = round(float(np.clip(active_level_dbfs - noise_floor_dbfs, 20.0, 60.0)), 1)
+    ratio = "4:1" if breath_bleed_detected else "2:1"
+    # Release should clear well before the next phrase: a fraction of the
+    # median gap so the gate is closed, not still ringing out, by the time
+    # the next word starts.
+    release_ms = round(float(np.clip(median_gap_ms * 0.3, 50.0, 300.0)), 1)
+
+    return {
+        "gaps_detected_count": len(segments),
+        "active_level_dbfs": active_level_dbfs,
+        "noise_floor_dbfs": noise_floor_dbfs,
+        "gap_level_dbfs": gap_level_dbfs,
+        "breath_bleed_db": breath_bleed_db,
+        "breath_bleed_detected": breath_bleed_detected,
+        "median_gap_duration_ms": round(median_gap_ms, 1),
+        "gate_suggestion": {
+            "threshold_db": threshold_db,
+            "ratio": ratio,
+            "range_db": range_db,
+            "attack_ms": 3.0,
+            "hold_ms": 20.0,
+            "release_ms": release_ms,
+            "sidechain_highpass_hz": 150.0 if breath_bleed_detected else None,
+            "rationale": (
+                f"Gaps sit at {gap_level_dbfs:.1f} dBFS, "
+                f"{breath_bleed_db:.1f} dB above the {noise_floor_dbfs:.1f} dBFS "
+                f"noise floor and {headroom_to_active:.1f} dB below the "
+                f"{active_level_dbfs:.1f} dBFS active level."
+            ),
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
 # Stereo / phase compatibility
 # ---------------------------------------------------------------------------
 def analyze_stereo_metrics(audio: AudioData) -> dict:

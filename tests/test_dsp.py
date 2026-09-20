@@ -160,5 +160,66 @@ check("mono file reported monophonic", st3.get("status") == "monophonic")
 os.remove(p)
 
 
+print("\n=== TEST: analyze_gate_settings_metrics ===")
+
+
+def phrase_gap_signal(gap_amp: float, n_phrases: int = 4, fs: int = FS) -> np.ndarray:
+    """Lead-in silence, then [phrase, gap] pairs. gap_amp=0 -> true silence gaps."""
+    lead_in = np.zeros(int(0.3 * fs), dtype=np.float32)
+    parts = [lead_in]
+    rng = np.random.RandomState(0)
+    for _ in range(n_phrases):
+        parts.append(sine(220, secs=0.5, amp=0.5, fs=fs))
+        if gap_amp > 0:
+            parts.append((gap_amp * rng.standard_normal(int(0.4 * fs))).astype(np.float32))
+        else:
+            parts.append(np.zeros(int(0.4 * fs), dtype=np.float32))
+    return np.concatenate(parts)
+
+
+clean_sig = phrase_gap_signal(gap_amp=0.0)
+g_clean = dsp.analyze_gate_settings_metrics(clean_sig, FS)
+check(
+    "clean gaps: no breath bleed",
+    g_clean["breath_bleed_detected"] is False,
+    f"bleed_db={g_clean['breath_bleed_db']}",
+)
+check("clean gaps: detected some gaps", g_clean["gaps_detected_count"] >= 3, g_clean["gaps_detected_count"])
+
+breathy_sig = phrase_gap_signal(gap_amp=0.03)
+g_breathy = dsp.analyze_gate_settings_metrics(breathy_sig, FS)
+check(
+    "breathy gaps: bleed detected",
+    g_breathy["breath_bleed_detected"] is True,
+    f"bleed_db={g_breathy['breath_bleed_db']}",
+)
+check(
+    "breathy gaps: gap level well above clean noise floor",
+    g_breathy["gap_level_dbfs"] > g_clean["gap_level_dbfs"] + 20,
+    f"breathy={g_breathy['gap_level_dbfs']} clean={g_clean['gap_level_dbfs']}",
+)
+check(
+    "breathy gaps: suggests higher ratio + sidechain HPF",
+    g_breathy["gate_suggestion"]["ratio"] == "4:1"
+    and g_breathy["gate_suggestion"]["sidechain_highpass_hz"] == 150.0,
+    g_breathy["gate_suggestion"],
+)
+check(
+    "clean gaps: no sidechain HPF suggested",
+    g_clean["gate_suggestion"]["sidechain_highpass_hz"] is None,
+)
+check(
+    "release suggestion shorter than the median gap",
+    g_breathy["gate_suggestion"]["release_ms"] < g_breathy["median_gap_duration_ms"],
+    f"release={g_breathy['gate_suggestion']['release_ms']} gap={g_breathy['median_gap_duration_ms']}",
+)
+
+too_short = dsp.analyze_gate_settings_metrics(sine(440, secs=0.05), FS)
+check("too-short signal returns error", "error" in too_short)
+
+
 print(f"\n{'='*40}\nRESULTS: {PASS} passed, {FAIL} failed\n{'='*40}")
-sys.exit(1 if FAIL else 0)
+# Guarded so an accidental `pytest tests/` collects this module instead of
+# dying on SystemExit during import.
+if __name__ == "__main__":
+    sys.exit(1 if FAIL else 0)

@@ -36,9 +36,24 @@ def make_test_wav(stereo=False):
     return path
 
 
+def make_breathy_wav():
+    """Phrases separated by audible breath noise in the gaps (for the gate tool)."""
+    rng = np.random.RandomState(0)
+    parts = [np.zeros(int(0.3 * FS), dtype=np.float32)]
+    for _ in range(4):
+        t = np.arange(int(0.5 * FS)) / FS
+        parts.append((0.5 * np.sin(2 * np.pi * 220 * t)).astype(np.float32))
+        parts.append((0.03 * rng.standard_normal(int(0.4 * FS))).astype(np.float32))
+    sig = np.concatenate(parts)
+    path = os.path.join(tempfile.gettempdir(), "_mcp_e2e_breathy.wav")
+    sf.write(path, sig, FS)
+    return path
+
+
 async def main():
     mono_wav = make_test_wav(stereo=False)
     stereo_wav = make_test_wav(stereo=True)
+    breathy_wav = make_breathy_wav()
 
     params = StdioServerParameters(command=sys.executable, args=[SERVER])
     passed, failed = 0, 0
@@ -55,12 +70,13 @@ async def main():
                 "analyze_frequency_spectrum",
                 "analyze_vocal_clarity",
                 "analyze_stereo_compatibility",
+                "analyze_noise_gate",
                 "compare_to_reference",
                 "read_project_memory",
                 "write_project_memory",
             ])
             if names == expected:
-                print(f"  PASS  lists all 8 tools: {names}")
+                print(f"  PASS  lists all 9 tools: {names}")
                 passed += 1
             else:
                 print(f"  FAIL  tool list mismatch.\n    got={names}\n    exp={expected}")
@@ -132,6 +148,27 @@ async def main():
             print(f"  {'PASS' if ok else 'FAIL'}  analyze_stereo_compatibility -> {r.get('summary')}")
             passed, failed = (passed + 1, failed) if ok else (passed, failed + 1)
 
+            # analyze_noise_gate: clean file has no gaps to report
+            r = await call("analyze_noise_gate", {"file_path": mono_wav})
+            ok = r.get("gaps_detected_count") == 0 and "summary" in r
+            print(f"  {'PASS' if ok else 'FAIL'}  analyze_noise_gate (no gaps) -> {r.get('summary')}")
+            passed, failed = (passed + 1, failed) if ok else (passed, failed + 1)
+
+            # analyze_noise_gate: breathy file detects bleed + suggests settings
+            r = await call("analyze_noise_gate", {"file_path": breathy_wav})
+            ok = (
+                r.get("breath_bleed_detected") is True
+                and r.get("gate_suggestion", {}).get("sidechain_highpass_hz") == 150.0
+            )
+            print(f"  {'PASS' if ok else 'FAIL'}  analyze_noise_gate (breathy) -> {r.get('summary')}")
+            passed, failed = (passed + 1, failed) if ok else (passed, failed + 1)
+
+            # include=levels adds the raw level fields
+            r = await call("analyze_noise_gate", {"file_path": breathy_wav, "include": "levels"})
+            ok = "gap_level_dbfs" in r and "noise_floor_dbfs" in r
+            print(f"  {'PASS' if ok else 'FAIL'}  analyze_noise_gate include=levels -> gap {r.get('gap_level_dbfs')}")
+            passed, failed = (passed + 1, failed) if ok else (passed, failed + 1)
+
             # compare_to_reference
             r = await call("compare_to_reference", {"target_path": mono_wav, "reference_path": stereo_wav})
             ok = "loudness_differential_lu" in r and "spectral_difference" in r and "summary" in r
@@ -166,10 +203,11 @@ async def main():
 
     os.remove(mono_wav)
     os.remove(stereo_wav)
+    os.remove(breathy_wav)
 
     # Clean up the test project written into the real memory store.
     try:
-        store = os.path.join(os.path.expanduser("~"), ".mixing-assistant", "memory.json")
+        store = os.path.join(os.path.expanduser("~"), ".mix-buddy", "memory.json")
         if os.path.exists(store):
             import json
             with open(store, "r", encoding="utf-8") as fh:

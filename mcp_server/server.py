@@ -305,6 +305,70 @@ def analyze_stereo_compatibility(file_path: str, include: str = "") -> dict:
 
 
 @mcp.tool()
+def analyze_noise_gate(file_path: str, include: str = "") -> dict:
+    """
+    Find pauses between phrases and measure what's left in them: the true
+    noise floor, the level during gaps, and whether breath/room noise/hiss is
+    bleeding through (gap level sits well above the floor but well below the
+    phrase level). Returns concrete gate/expander settings (threshold, ratio,
+    range, attack, hold, release, and a sidechain high-pass suggestion when
+    bleed is detected).
+
+    Use this when the user asks about noise gates, expanders, breath noise
+    between phrases/words, or "my gate isn't closing enough."
+
+    Args:
+        file_path: Absolute path to the target audio file (vocal or any
+            source with clear pauses between phrases).
+        include: Optional detail blocks (comma-separated). Valid: "levels"
+            (active_level_dbfs, noise_floor_dbfs, gap_level_dbfs).
+
+    Returns (overview): summary, gaps_detected_count, breath_bleed_detected,
+        gate_suggestion.
+    """
+    audio, err = _load(file_path)
+    if err:
+        return err
+
+    inc = _parse_include(include)
+    m = dsp.analyze_gate_settings_metrics(audio.mono, audio.sample_rate)
+    if "error" in m:
+        return m
+
+    if m["gaps_detected_count"] == 0:
+        out = {
+            "summary": "No clear pauses between phrases found - nothing to gate.",
+            "gaps_detected_count": 0,
+            "breath_bleed_detected": False,
+            "gate_suggestion": None,
+        }
+        return out
+
+    if m["breath_bleed_detected"]:
+        verdict = (
+            f"breath/noise is bleeding through {m['gaps_detected_count']} gap(s) "
+            f"({m['breath_bleed_db']:.1f} dB above the noise floor) - "
+            f"tighten with {m['gate_suggestion']['ratio']} ratio and a "
+            f"{m['gate_suggestion']['sidechain_highpass_hz']:.0f} Hz sidechain high-pass."
+        )
+    else:
+        verdict = f"{m['gaps_detected_count']} gap(s) close cleanly - no bleed detected."
+
+    out = {
+        "summary": f"Gate: {verdict}",
+        "gaps_detected_count": m["gaps_detected_count"],
+        "breath_bleed_detected": m["breath_bleed_detected"],
+        "median_gap_duration_ms": m["median_gap_duration_ms"],
+        "gate_suggestion": m["gate_suggestion"],
+    }
+    if "levels" in inc:
+        out["active_level_dbfs"] = m["active_level_dbfs"]
+        out["noise_floor_dbfs"] = m["noise_floor_dbfs"]
+        out["gap_level_dbfs"] = m["gap_level_dbfs"]
+    return out
+
+
+@mcp.tool()
 def compare_to_reference(
     target_path: str, reference_path: str, include: str = ""
 ) -> dict:
