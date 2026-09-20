@@ -6,12 +6,14 @@
 
 Everything is installed and configured:
 - ✓ Skill installed at `~/.jcode/skills/mix-buddy/`
-- ✓ MCP server registered as `audio-mixing-analyzer`
-- ✓ All 55 tests passing (25 DSP + 16 memory + 14 E2E)
+- ✓ MCP server registered as `audio-mixing-analyzer` (Jcode + Claude Code)
+- ✓ All 66 tests passing (33 DSP + 16 memory + 17 E2E)
 
 ## 🎯 How to use
 
-**Restart Jcode/Claude Desktop** to load the new configuration, then:
+**Start a new Claude Code session** (or restart Jcode/Claude Desktop) to load
+the configuration — a server registered mid-session isn't picked up by that
+session. Then:
 
 ```
 "How can I make this vocal clearer? It sounds muddy."
@@ -30,10 +32,11 @@ Mix Buddy will:
 - **Compression:** "what compression settings should I try on this rap vocal?"
 - **Loudness:** "is my master loud enough for Spotify?"
 - **Phase/mono:** "does this mix collapse in mono?"
+- **Gating:** "breath noise is bleeding through between phrases"
 - **Reference matching:** "make my voice higher and airier like Brent Faiyaz"
 - **Compare:** "compare my mix to this reference track"
 
-## 🛠 The 8 MCP tools
+## 🛠 The 9 MCP tools
 
 | Tool | What it measures |
 |------|------------------|
@@ -42,6 +45,7 @@ Mix Buddy will:
 | analyze_frequency_spectrum | Band energies + classified resonances |
 | analyze_vocal_clarity | Mud/clarity/sibilance + EQ moves |
 | analyze_stereo_compatibility | Correlation, phase, mono safety |
+| analyze_noise_gate | Inter-phrase gap/breath-bleed + gate settings |
 | compare_to_reference | Loudness + spectral diff vs reference |
 | read_project_memory | Recall stored project context |
 | write_project_memory | Persist project context |
@@ -57,13 +61,14 @@ Pass `include="detail"` to expand the heavy data only when needed.
 
 ## 🧪 Validate it works
 
-Run the validation test to confirm the MCP server is alive:
+Run the end-to-end test to confirm the MCP server is alive:
 ```bash
 cd C:\Users\brahi\mix-buddy
-python tests\validate_mcp.py
+python tests\test_mcp_e2e.py
 ```
 
-Should print: `✓ MCP server running: 8 tools`
+Its first line should read `PASS  lists all 9 tools: [...]`, ending with
+`MCP E2E: 17 passed, 0 failed`.
 
 ## 📚 Learn more
 

@@ -86,4 +86,7 @@ r = memory.read_memory("song1")
 check("corrupt file -> empty/template, no crash", r["exists"] is False)
 
 print(f"\n{'='*40}\nMEMORY: {PASS} passed, {FAIL} failed\n{'='*40}")
-sys.exit(1 if FAIL else 0)
+# Guarded so an accidental `pytest tests/` collects this module instead of
+# dying on SystemExit during import.
+if __name__ == "__main__":
+    sys.exit(1 if FAIL else 0)
