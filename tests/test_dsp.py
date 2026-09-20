@@ -160,6 +160,89 @@ check("mono file reported monophonic", st3.get("status") == "monophonic")
 os.remove(p)
 
 
+print("\n=== TEST: true peak and PLR ===")
+
+# A full-scale sine's true peak should be ~0 dBFS and never below sample peak.
+fs_sine = sine(997, secs=1.0, amp=1.0)
+tp = dsp.true_peak_dbfs(fs_sine, FS)
+sample_peak = dsp._to_db(float(np.max(np.abs(fs_sine))))
+check("true peak of full-scale sine ~0 dBFS", abs(tp) < 1.0, f"got {tp:.2f}")
+check("true peak >= sample peak", tp >= sample_peak - 0.01, f"tp={tp:.2f} sp={sample_peak:.2f}")
+
+# PLR: a squashed (clipped) signal must have a lower PLR than a dynamic one.
+dynamic = (sine(220, secs=3.0, amp=0.9) * np.linspace(0.05, 1.0, int(3.0 * FS))).astype(np.float32)
+squashed = np.clip(sine(220, secs=3.0, amp=0.9) * 8, -0.9, 0.9).astype(np.float32)
+plr_dyn = dsp.peak_to_loudness_ratio(dynamic, FS)["plr_lu"]
+plr_sq = dsp.peak_to_loudness_ratio(squashed, FS)["plr_lu"]
+check("dynamic signal has higher PLR than squashed",
+      plr_dyn > plr_sq, f"dynamic={plr_dyn} squashed={plr_sq}")
+check("PLR fields present",
+      set(dsp.peak_to_loudness_ratio(dynamic, FS)) == {"true_peak_dbtp", "integrated_loudness_lufs", "plr_lu"})
+
+
+print("\n=== TEST: estimate_f0 and harmonic centroid ===")
+
+
+def harmonic_tone(f0, n_harmonics=8, amp=0.3, secs=2.0, fs=FS):
+    t = np.arange(int(secs * fs)) / fs
+    return sum(
+        (amp / (k + 1)) * np.sin(2 * np.pi * f0 * (k + 1) * t) for k in range(n_harmonics)
+    ).astype(np.float32)
+
+
+f0_est = dsp.estimate_f0(harmonic_tone(220), FS)
+check("estimates f0 of a 220 Hz tone", abs(f0_est - 220) < 5, f"got {f0_est}")
+check("unpitched noise returns None", dsp.estimate_f0(np.random.RandomState(0).standard_normal(FS).astype(np.float32), FS) is None)
+
+# Same harmonic structure at different pitches: raw centroid differs wildly,
+# harmonic centroid should agree - that is the whole point of the measure.
+low = dsp.multiband_energy(harmonic_tone(80), FS)
+high = dsp.multiband_energy(harmonic_tone(220), FS)
+check(
+    "raw centroid differs with pitch",
+    abs(high["spectral_centroid_hz"] - low["spectral_centroid_hz"]) > 100,
+    f"{low['spectral_centroid_hz']} vs {high['spectral_centroid_hz']}",
+)
+check(
+    "harmonic centroid is pitch-invariant",
+    abs(high["harmonic_centroid"] - low["harmonic_centroid"]) < 0.2,
+    f"{low['harmonic_centroid']} vs {high['harmonic_centroid']}",
+)
+check("harmonic centroid is None for noise",
+      dsp.multiband_energy(np.random.RandomState(1).standard_normal(FS).astype(np.float32), FS)["harmonic_centroid"] is None)
+
+
+print("\n=== TEST: broad resonance detection (constant-Q baseline) ===")
+
+
+def broad_bump(center, gain_db=12.0, q=1.0, fs=FS):
+    """Pink noise with a broad resonant hump - the realistic boxiness case."""
+    rng = np.random.RandomState(0)
+    n = rng.standard_normal(int(3.0 * fs))
+    spec = np.fft.rfft(n)
+    f = np.fft.rfftfreq(len(n), 1 / fs)
+    f[0] = 1
+    spec = spec / np.sqrt(f)
+    spec = spec * 10 ** ((gain_db / 20) * np.exp(-0.5 * (np.log2(f / center) / q) ** 2))
+    return (np.fft.irfft(spec)[: int(3.0 * fs)] * 0.05).astype(np.float32)
+
+
+# A fixed-width-in-Hz baseline used to miss this entirely; the log-spaced
+# baseline catches it. Guards against regressing back to linear smoothing.
+r_boxy = dsp.detect_resonances_metrics(broad_bump(800), FS)
+boxy_hit = [
+    x for x in r_boxy["resonances"] if abs(np.log2(x["frequency_hz"] / 800)) < 0.5
+]
+check("detects broad 800 Hz boxiness", bool(boxy_hit),
+      f"peaks={[x['frequency_hz'] for x in r_boxy['resonances'][:5]]}")
+
+r_harsh = dsp.detect_resonances_metrics(broad_bump(3000), FS)
+check(
+    "detects broad 3 kHz presence hump",
+    any(abs(np.log2(x["frequency_hz"] / 3000)) < 0.5 for x in r_harsh["resonances"]),
+)
+
+
 print("\n=== TEST: analyze_gate_settings_metrics ===")
 
 

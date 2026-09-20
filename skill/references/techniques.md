@@ -60,6 +60,12 @@ hit, long enough to avoid pumping.**
 4. Boost 2.5-3 kHz by 1.5-3 dB (intelligibility / "in front of the beat").
 5. Gentle air shelf +1.5-3 dB from 10-12 kHz.
 6. Make sure the vocal level sits 1-3 dB above the busiest part of the beat.
+   This lead-to-accompaniment ratio (LAR) is not one-size-fits-all: in
+   listening tests, hearing-impaired listeners preferred a **noticeably
+   higher LAR** than normal-hearing listeners, while showing no distinct
+   preference on spectral balance (Benjamin & Siedenburg 2023). If a mix is
+   for an older or hearing-impaired audience, push the vocal up rather than
+   reaching for EQ.
 7. Carve the **instrumental** to make room: a small 2-4 kHz dip on the beat
    (dynamic/side-chained to the vocal) opens a pocket so the vocal sits without
    pushing its level too high.
@@ -114,6 +120,59 @@ without harshness (watch spectral_centroid creeping too high).
 
 ---
 
+## What "a good mix" decomposes into (research framing)
+
+Hermes (2017), reviewing the academic and trade literature, found that
+perceived mix quality resolves into four high-level attributes plus
+context-specific ones:
+
+1. **Clarity and separation** — can you hear each element distinctly?
+2. **Balance** — relative levels and tonal balance.
+3. **Impact and interest** — does it move the listener?
+4. **Freedom from technical faults** — noise, distortion, phase problems.
+
+Useful for structuring a diagnosis: when a user says a mix "sounds bad" but
+can't say why, work these four in order. Most complaints resolve to one of
+them, and they suggest different tools — clarity/separation is arrangement
+and masking work, balance is faders and EQ, technical faults are the
+analyzer's job.
+
+That research also isolated two measurable predictors of **spectral clarity**
+for single sounds: the **harmonic centroid** (spectral centroid ÷ fundamental
+— see `diagnostic_map.md`) and **mid-range spectral peakiness**. They
+correlate with perceived clarity from Spearman 0.631 (bass and vocal) to
+0.848 (strings) for filtered single sounds, dropping to r=0.568 within a mix.
+Treat that as directional: clarity is partly measurable, not fully.
+
+### Three ways to use EQ
+
+A systematic review of the EQ literature (Delikara 2025) separates three
+intents, which is worth keeping distinct because they fail in different ways:
+
+- **Corrective** — fixing a technical problem (resonance, rumble, masking).
+- **Shaping** — enriching aesthetic character (presence, air, weight).
+- **Creative** — EQ as an effect in its own right (telephone, lo-fi, filter
+  sweeps).
+
+Most amateur EQ damage comes from applying a *shaping* mindset to a
+*corrective* problem, or reaching for EQ at all when the fix is a balance or
+arrangement move (see `static_mix_workflow.md`).
+
+### On vocal effects chains
+
+DiffVox (Yu et al., DAFx25) reverse-engineered effects settings from 435
+professionally mixed vocal tracks. Two findings worth carrying:
+
+- **High-pass and low-shelf work as a pair** to shape the low end — they're
+  strongly correlated across real mixes, so think of low-end shaping as one
+  decision with two controls rather than two independent moves.
+- The dominant axis of variation across real vocal chains is **perceived
+  spaciousness**, with **spectral brightness** second. If a vocal isn't
+  sitting right and the tonal balance is already close, the answer is more
+  often the space (reverb/delay depth) than more EQ.
+
+---
+
 ## Chain-Order Refinements (cross-confirmed across sources)
 
 These sharpen the generic chain above. Each one showed up in more than one
@@ -150,11 +209,18 @@ engineer's preference.
   signal stays dynamic.
 - **A limiter on the vocal bus** catching just the very peak tips is a
   finishing move, not a crutch.
-- **Autotune retune speed is genre-dependent**: fast/hard (around 6, with a
-  touch of humanize) for the deliberately-tuned Afrobeat sound; slow (around
-  25, tracking ~25) for a natural pop lead. Find the song's key first and set
-  the scale; let individual notes in per-channel where a harmony sits outside
-  the scale. No autotune on ad-libs or spoken phrases.
+- **Autotune retune speed is genre-dependent**, and spans a full spectrum:
+  - **0 — "zero-onset Auto-Tune"** (Provenzano 2024): pitch is mapped to
+    scale steps the instant it's detected, flatlining F0 and turning glides
+    into discrete steps. This is the overt T-Pain/trap sound — an
+    *instrument*, not a correction, and the defining setting of the aesthetic.
+  - **~6 with a little humanize** — hard but still musical; the deliberately
+    tuned Afrobeat sound.
+  - **~25 (tracking ~25)** — transparent correction for a natural pop lead.
+
+  Find the song's key first and set the scale; let individual notes in
+  per-channel where a harmony sits outside it. No autotune on ad-libs or
+  spoken phrases.
 
 ---
 

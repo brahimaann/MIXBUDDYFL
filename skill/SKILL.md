@@ -130,8 +130,15 @@ processing references once balance is genuinely the limiting factor.
 - If a tool returns an `error`, report it plainly and ask for a valid file. Do
   not fabricate analysis.
 - Indices like `mud_index` and `clarity_score` are **relative heuristics**, not
-  absolute studio standards. Present them as directional, and always pair with
-  the concrete frequency/dB move.
+  absolute studio standards, and they are not the validated clarity predictors
+  from the research literature (see `techniques.md`). Present them as
+  directional, and always pair with the concrete frequency/dB move.
+- `harmonic_centroid` and `fundamental_hz` are `null` for unpitched sources
+  and full mixes. Say so rather than reporting a number you don't have.
+- A clean `analyze_frequency_spectrum` result does **not** prove the low end
+  is fine — broad sub-800 Hz humps are invisible to the peak detector by
+  design. Check band energies or a reference comparison before telling
+  someone their low end is balanced.
 - For "sound like [artist]" requests, be honest that matching a specific
   artist's sound depends heavily on the recording, performance, and the
   instrumental, not just mix settings. Give the techniques that get closest.

@@ -63,7 +63,12 @@ def analyze_loudness(file_path: str, include: str = "") -> dict:
         include: Optional detail blocks (comma-separated). Valid: "format"
             (sample_rate, channels).
 
-    Returns (overview): summary, integrated_loudness_lufs, duration_seconds.
+    Also returns true peak (dBTP, 4x oversampled) and PLR (peak-to-loudness
+    ratio), which says how much of the loudness came from compression: chart
+    pop sits near 9.3 LU, 1990s productions near 12.6 LU.
+
+    Returns (overview): summary, integrated_loudness_lufs, true_peak_dbtp,
+        plr_lu, duration_seconds.
     """
     audio, err = _load(file_path)
     if err:
@@ -83,9 +88,24 @@ def analyze_loudness(file_path: str, include: str = "") -> dict:
     else:
         verdict = "in the typical streaming range (~-14 LUFS)"
 
+    # PLR contextualises the loudness: how much of it came from compression.
+    tp = dsp.true_peak_dbfs(audio.mono, audio.sample_rate)
+    plr = tp - lufs
+    if plr < 8.0:
+        density = "very dense/limited"
+    elif plr < 11.0:
+        density = "typical of modern commercial masters"
+    else:
+        density = "dynamically open"
+
     out = {
-        "summary": f"Integrated loudness {lufs:.1f} LUFS - {verdict}.",
+        "summary": (
+            f"Integrated loudness {lufs:.1f} LUFS - {verdict}. "
+            f"PLR {plr:.1f} LU ({density})."
+        ),
         "integrated_loudness_lufs": round(lufs, 2),
+        "true_peak_dbtp": round(tp, 2),
+        "plr_lu": round(plr, 2),
         "duration_seconds": round(audio.duration_seconds, 2),
     }
     if "format" in inc:
@@ -161,8 +181,13 @@ def analyze_frequency_spectrum(
         include: Optional detail blocks (comma-separated). Valid: "bands"
             (full per-band energy table), "resonances" (full list, up to 10).
 
-    Returns (overview): summary, spectral_centroid_hz, peaks_detected_count,
-        top_resonances (the 3 worst). Use include for the full tables.
+    Also returns the harmonic centroid (spectral centroid divided by the
+    fundamental), which expresses brightness in harmonics and so is comparable
+    across sources of different pitch; it is null for unpitched material.
+
+    Returns (overview): summary, spectral_centroid_hz, harmonic_centroid,
+        fundamental_hz, peaks_detected_count, top_resonances (the 3 worst).
+        Use include for the full tables.
     """
     audio, err = _load(file_path)
     if err:
@@ -193,6 +218,8 @@ def analyze_frequency_spectrum(
     out = {
         "summary": f"Spectrum: {verdict}",
         "spectral_centroid_hz": centroid,
+        "harmonic_centroid": bands.get("harmonic_centroid"),
+        "fundamental_hz": bands.get("fundamental_hz"),
         "peaks_detected_count": res["peaks_detected_count"],
         "top_resonances": top,
     }

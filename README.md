@@ -47,9 +47,9 @@ default; pass `include` to expand detail (e.g. `include="bands,resonances"`).
 
 | Tool | Returns |
 |------|---------|
-| `analyze_loudness` | Integrated LUFS (EBU R128) |
+| `analyze_loudness` | Integrated LUFS (EBU R128), true peak, PLR |
 | `analyze_dynamics` | Peak/RMS/crest factor + compression suggestion |
-| `analyze_frequency_spectrum` | Band energies + classified resonances |
+| `analyze_frequency_spectrum` | Band energies, harmonic centroid, classified resonances |
 | `analyze_vocal_clarity` | Mud/clarity/sibilance indices + EQ moves |
 | `analyze_stereo_compatibility` | Correlation, phase, mono safety |
 | `analyze_noise_gate` | Inter-phrase gap/breath-bleed detection + gate settings |
@@ -73,7 +73,7 @@ claude mcp add --scope user audio-mixing-analyzer -- python "C:\Users\brahi\mix-
 ## Run the tests
 
 ```
-python tests/test_dsp.py        # 33 DSP unit tests (synthetic ground truth)
+python tests/test_dsp.py        # 44 DSP unit tests (synthetic ground truth)
 python tests/test_memory.py     # 16 project-memory unit tests
 python tests/test_mcp_e2e.py    # 17 end-to-end MCP protocol tests
 python tests/demo_workflow.py   # human-readable workflow demo

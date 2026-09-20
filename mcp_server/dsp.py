@@ -11,7 +11,7 @@ from dataclasses import dataclass
 
 import numpy as np
 import soundfile as sf
-from scipy.signal import find_peaks, lfilter
+from scipy.signal import find_peaks, lfilter, resample_poly
 
 
 # ---------------------------------------------------------------------------
@@ -153,6 +153,37 @@ def _to_db(x: float) -> float:
     return float(20 * np.log10(max(x, 1e-10)))
 
 
+def true_peak_dbfs(mono: np.ndarray, fs: int, oversample: int = 4) -> float:
+    """
+    True-peak estimate (dBTP) via 4x oversampling, per the ITU-R BS.1770
+    approach. Inter-sample peaks can exceed the sample peak by ~0.1-1 dB, so
+    this is the figure to use for peak-to-loudness comparisons and for
+    checking headroom before lossy encoding.
+    """
+    if mono.size == 0:
+        return -100.0
+    up = resample_poly(mono.astype(np.float64), oversample, 1)
+    return _to_db(float(np.max(np.abs(up))))
+
+
+def peak_to_loudness_ratio(mono: np.ndarray, fs: int) -> dict:
+    """
+    PLR = true peak (dBTP) - integrated loudness (LUFS).
+
+    A density measure: low PLR means heavily compressed/limited, high PLR
+    means dynamically open. Benchmarks from a survey of 120 Billboard
+    Year-End Hot 100 singles (Tint & Dragulin 2025): 12.6 LU in 1990,
+    10.6 in 2000, and 9.3 in both 2010 and 2020.
+    """
+    tp = true_peak_dbfs(mono, fs)
+    lufs = integrated_loudness_lufs(mono, fs)
+    return {
+        "true_peak_dbtp": round(tp, 2),
+        "integrated_loudness_lufs": round(lufs, 2),
+        "plr_lu": round(tp - lufs, 2),
+    }
+
+
 def analyze_dynamics_metrics(mono: np.ndarray, fs: int) -> dict:
     """
     Compute peak, RMS, crest factor and derive compression suggestions.
@@ -245,6 +276,92 @@ def _classify_frequency(freq: float) -> str:
     return "ultra-high"
 
 
+def _constant_q_baseline(
+    freqs: np.ndarray,
+    db_spectrum: np.ndarray,
+    octave_fraction: float = 1.0,
+    n_points: int = 2048,
+):
+    """
+    Smoothed baseline and local standard deviation computed on a LOG frequency
+    grid, so the analysis window spans a constant fraction of an octave at
+    every frequency.
+
+    A fixed-width-in-Hz window is wildly uneven in perceptual terms: the old
+    500 Hz window spanned 8.45 octaves at 100 Hz but only 0.07 octaves at
+    10 kHz. Log spacing is what the literature uses for exactly this reason --
+    1/3-octave and ERB bands in Uriostegui-Hernandez et al. (Appl. Sci. 2025,
+    15, 3038, benchmarked against Soothe2 and RESO) and 1/6-octave LTAS
+    smoothing in Hermes (2017).
+
+    The 1-octave default is tuned for THIS detector, not taken from either
+    paper (they smooth an LTAS for shape; we need a baseline a peak can stand
+    out from). Measured against planted resonances, 0.5-1.5 octaves is a
+    stable plateau that detects everything the old linear window did and
+    additionally catches broad ~800 Hz boxiness. Narrower (1/3, 1/6 octave)
+    hugs narrow low-mid peaks too closely and loses them.
+
+    Returns (smoothed, local_std) interpolated back onto `freqs`.
+    """
+    lo = max(float(freqs[1]), 20.0)
+    hi = float(freqs[-1])
+    log_grid = np.logspace(np.log10(lo), np.log10(hi), n_points)
+    db_log = np.interp(log_grid, freqs, db_spectrum)
+
+    points_per_octave = n_points / np.log2(hi / lo)
+    win = int(round(octave_fraction * points_per_octave))
+    win = max(3, win + (win + 1) % 2)  # force odd, >= 3
+
+    half = win // 2
+    padded = np.pad(db_log, half, mode="edge")
+    csum = np.cumsum(np.insert(padded, 0, 0.0))
+    csum_sq = np.cumsum(np.insert(padded ** 2, 0, 0.0))
+    mean_log = (csum[win:] - csum[:-win]) / win
+    mean_sq_log = (csum_sq[win:] - csum_sq[:-win]) / win
+    std_log = np.sqrt(np.maximum(mean_sq_log - mean_log ** 2, 0.0))
+
+    smoothed = np.interp(freqs, log_grid, mean_log[:n_points])
+    local_std = np.interp(freqs, log_grid, std_log[:n_points])
+    return smoothed, local_std
+
+
+def estimate_f0(mono: np.ndarray, fs: int, fmin: float = 50.0, fmax: float = 1000.0):
+    """
+    Estimate the average fundamental frequency by autocorrelation.
+
+    Returns None when the signal has no clear periodicity (percussion, noise,
+    a full mix), which is the honest answer -- callers must handle it rather
+    than receiving a meaningless number.
+    """
+    seg = _segment_for_fft(mono, fs, seconds=3.0).astype(np.float64)
+    if seg.size < int(fs / fmin) * 2:
+        return None
+    seg = seg - np.mean(seg)
+    if not np.any(seg):
+        return None
+
+    n = 1
+    while n < 2 * len(seg):
+        n <<= 1
+    spec = np.fft.rfft(seg, n=n)
+    acf = np.fft.irfft(spec * np.conj(spec), n=n)[: len(seg)]
+    if acf[0] <= 0:
+        return None
+    acf = acf / acf[0]
+
+    min_lag = max(1, int(fs / fmax))
+    max_lag = min(len(acf) - 1, int(fs / fmin))
+    if max_lag <= min_lag:
+        return None
+
+    window = acf[min_lag : max_lag + 1]
+    best = int(np.argmax(window)) + min_lag
+    # Require real periodicity; an unpitched source should return None.
+    if acf[best] < 0.3:
+        return None
+    return float(fs / best)
+
+
 def detect_resonances_metrics(
     mono: np.ndarray, fs: int, local_deviation_factor: float = 2.0
 ) -> dict:
@@ -283,22 +400,9 @@ def detect_resonances_metrics(
     freqs = np.fft.rfftfreq(n_fft, d=1.0 / fs)
     db_spectrum = 20 * np.log10(mag + 1e-10)
 
-    # Smooth the spectrum to build a moving-average baseline (~500 Hz window).
-    smooth_len = int(500 * n_fft / fs)
-    smooth_len = max(5, smooth_len + (smooth_len + 1) % 2)  # force odd, >=5
-    kernel = np.ones(smooth_len) / smooth_len
-    smoothed = np.convolve(db_spectrum, kernel, mode="same")
-
-    # Vectorized local standard deviation via running sums (fixes O(n) loop).
-    half = smooth_len // 2
-    padded = np.pad(db_spectrum, half, mode="edge")
-    csum = np.cumsum(np.insert(padded, 0, 0.0))
-    csum_sq = np.cumsum(np.insert(padded ** 2, 0, 0.0))
-    win = 2 * half + 1
-    local_mean = (csum[win:] - csum[:-win]) / win
-    local_mean_sq = (csum_sq[win:] - csum_sq[:-win]) / win
-    local_var = np.maximum(local_mean_sq - local_mean ** 2, 0.0)
-    local_std = np.sqrt(local_var)[: len(db_spectrum)]
+    # Baseline + local deviation on a log-frequency grid (constant fraction of
+    # an octave everywhere) rather than a fixed window in Hz.
+    smoothed, local_std = _constant_q_baseline(freqs, db_spectrum)
 
     threshold = smoothed + local_deviation_factor * local_std
     peaks, _ = find_peaks(
@@ -361,6 +465,19 @@ def multiband_energy(mono: np.ndarray, fs: int) -> dict:
     total_power = np.sum(power) + 1e-12
     centroid = float(np.sum(freqs * power) / total_power)
     out["spectral_centroid_hz"] = round(centroid, 1)
+
+    # Harmonic centroid = spectral centroid / fundamental (Hermes 2017).
+    # Raw centroid conflates "bright" with "high-pitched": a bass and a vocal
+    # can share a centroid and sound nothing alike. Dividing by f0 expresses
+    # brightness in harmonics, which Hermes found to be one of two predictors
+    # of perceived spectral clarity. None for unpitched sources / full mixes.
+    f0 = estimate_f0(mono, fs)
+    if f0:
+        out["fundamental_hz"] = round(f0, 1)
+        out["harmonic_centroid"] = round(centroid / f0, 2)
+    else:
+        out["fundamental_hz"] = None
+        out["harmonic_centroid"] = None
     return out
 
 

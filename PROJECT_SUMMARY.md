@@ -59,9 +59,9 @@ heavy detail blocks only when needed - this keeps token usage low.
 
 | Tool | Overview returns | `include` options |
 |------|------------------|-------------------|
-| `analyze_loudness` | integrated LUFS + verdict vs -14 | `format` |
+| `analyze_loudness` | integrated LUFS, true peak, PLR + verdict | `format` |
 | `analyze_dynamics` | crest factor + compression suggestion | `levels` |
-| `analyze_frequency_spectrum` | centroid, top 3 resonances | `bands`, `resonances` |
+| `analyze_frequency_spectrum` | centroid, harmonic centroid, top 3 resonances | `bands`, `resonances` |
 | `analyze_vocal_clarity` | clarity/mud/sibilance + EQ moves | `raw` |
 | `analyze_stereo_compatibility` | correlation, phase, mono safety | `detail` |
 | `analyze_noise_gate` | breath-bleed detection + gate settings | `levels` |
@@ -80,12 +80,17 @@ Example summaries the tools actually produce:
 
 - **Loudness:** EBU R128 / ITU-R BS.1770 K-weighting with two-stage gating.
   K-weighting coefficients are computed **analytically** so any sample rate
-  works (not just 44.1/48 kHz).
+  works (not just 44.1/48 kHz). Plus 4x-oversampled **true peak** and **PLR**
+  (peak-to-loudness ratio), benchmarked against measured chart data.
 - **Dynamics:** peak/RMS/crest factor + a short-term RMS spread for dynamic
   range; crest factor drives the suggested compression ratio/attack/release.
 - **Spectrum/resonance:** Welch-style averaged power spectrum across the whole
   file; resonances found against a dynamic (smoothed mean + local std-dev)
-  threshold curve, then classified (mud, boxiness, presence, sibilance, etc.).
+  threshold curve computed on a **log-frequency grid** (constant fraction of
+  an octave, rather than a fixed width in Hz), then classified (mud,
+  boxiness, presence, sibilance, etc.). Also reports the **harmonic centroid**
+  (centroid / f0), which unlike raw centroid is comparable across sources of
+  different pitch.
 - **Vocal clarity:** band-energy ratios -> mud/clarity/sibilance indices ->
   concrete EQ/de-ess suggestions.
 - **Stereo/phase:** correlation coefficient, interchannel delay via GCC-PHAT,
@@ -128,6 +133,15 @@ Mixing*). Techniques that appeared in more than one independent source were
 prioritized - e.g. de-essing the reverb send, stacking many light processing
 stages, and riding levels before compression.
 
+A later pass added academic grounding: Hermes (2017) on measuring mix quality
+(the harmonic centroid, and the four-attribute decomposition of mix quality),
+Tint & Dragulin (2025) on measured loudness/PLR/tonal-balance benchmarks from
+120 Billboard singles, Delikara (2025) on corrective/shaping/creative EQ
+intents, Benjamin & Siedenburg (2023) on lead-to-accompaniment ratio for
+hearing-impaired listeners, and Provenzano (2024) on zero-onset Auto-Tune.
+Claims that could not be implemented faithfully (Hermes's mid-range spectral
+peakiness model) are documented as such rather than approximated.
+
 The skill now also teaches **progressive disclosure** (when to use `include`)
 and **project memory** (read-then-replace continuity across sessions).
 
@@ -163,12 +177,12 @@ target is -9 LUFS, reference is Brent Faiyaz, you tend to get boxy low-mids."
 
 | Suite | Count | What it checks |
 |-------|-------|----------------|
-| `tests/test_dsp.py` | 33 | DSP math vs synthetic audio with known ground truth |
+| `tests/test_dsp.py` | 44 | DSP math vs synthetic audio with known ground truth |
 | `tests/test_memory.py` | 16 | memory round-trip, replace-not-merge, isolation, corruption |
 | `tests/test_mcp_e2e.py` | 17 | full MCP protocol: lists 9 tools, overview vs `include`, memory |
 | `tests/demo_workflow.py` | - | human-readable demo; detects planted mud + sibilance |
 
-**Total: 66 automated assertions passing.** The demo plants a 320 Hz mud peak
+**Total: 77 automated assertions passing.** The demo plants a 320 Hz mud peak
 and 7 kHz sibilance and confirms the pipeline detects and prescribes fixes.
 
 Run them:
@@ -242,7 +256,7 @@ mix-buddy/
     references/                  frequency guide, diagnostic map, techniques,
                                   gating_and_expansion, setup
   tests/
-    test_dsp.py                  33 DSP unit tests
+    test_dsp.py                  44 DSP unit tests
     test_memory.py               16 memory unit tests
     test_mcp_e2e.py              17 end-to-end MCP tests
     demo_workflow.py             human-readable demo

@@ -18,6 +18,42 @@ by ear.
 Target gain to hit a goal: `gain_dB = target_LUFS - integrated_LUFS`. If adding
 that gain pushes true peak above -1 dBFS, put a limiter last.
 
+### What commercial releases actually measure
+
+-14 LUFS is the *streaming normalization* reference, not what hit records are
+mastered to. A survey of 120 Billboard Year-End Hot 100 singles (Tint &
+Dragulin 2025) measured:
+
+| Decade | Integrated loudness | PLR (dynamics) |
+|---|---|---|
+| 1990 | -12.5 LUFS | 12.6 LU |
+| 2000 | — | 10.6 LU |
+| 2010 | **-8.0 LUFS** (loudness-war peak) | 9.3 LU |
+| 2020 | **-8.8 LUFS** | 9.3 LU |
+
+All-decade mean: -9.7 LUFS. Use these when a user asks "is my master
+competitive?" — a modern pop/hip-hop master landing near -9 LUFS with a PLR
+around 9 LU is normal, not broken, even though streaming will turn it down.
+Tell them the tradeoff (density vs. dynamics) rather than enforcing -14.
+
+### From `plr_lu` (peak-to-loudness ratio)
+
+| Reading | Diagnosis | Action |
+|---|---|---|
+| < 8 LU | Very dense — heavily limited/clipped | Fine for aggressive genres; check for pumping and lost transients. |
+| 8-11 LU | Typical of modern commercial masters | No action. |
+| > 12 LU | Dynamically open (1990s-like, or unmastered) | Appropriate for acoustic/classical; if the goal is competitive loudness, there's room. |
+
+PLR contextualises loudness: it separates "loud because it's dense" from
+"loud because it's well balanced." Two masters at the same LUFS with PLRs of
+7 and 12 are completely different records.
+
+**Tonal balance has drifted too:** across the same dataset, 2020 productions
+carry the most low and low-mid energy and the least high end, while 1990
+productions had the least low end and the most high-mids. If a user's
+reference is a recent hit, expect a darker, bass-heavier target curve than
+older material.
+
 ---
 
 ## From `analyze_dynamics`
@@ -52,6 +88,22 @@ For each entry in `resonances`:
 Compare `frequency_bands` energies for overall balance: a band much hotter than
 its neighbors is a candidate for subtractive EQ. Low `spectral_centroid_hz`
 (< ~1.5 kHz for a full mix) = dull; very high = harsh/thin.
+
+**Prefer `harmonic_centroid` over `spectral_centroid_hz` when judging the
+brightness of a single pitched source.** Raw centroid conflates "bright" with
+"high-pitched" - a bass and a vocal with identical harmonic structure produce
+completely different raw centroids. The harmonic centroid (centroid / f0,
+Hermes 2017) expresses brightness in harmonics and is comparable across
+sources. It is `null` for unpitched material and full mixes; fall back to the
+raw centroid there.
+
+**Known limitation - very broad low-frequency humps.** The resonance detector
+finds peaks that stand out from a local baseline, so a *broad* (~2 octave)
+buildup centred around 200 Hz is invisible to it: there isn't enough spectrum
+below it to establish a baseline. Broad humps from ~800 Hz up are detected.
+If a user reports boom or mud and `analyze_frequency_spectrum` reports no
+resonance, do not conclude the low end is fine - compare `frequency_bands`
+energies, or use `compare_to_reference`, which catches broad tilt by design.
 
 ---
 
