@@ -1,8 +1,8 @@
 ---
 name: mix-buddy
-description: When the user wants help mixing music, mixing vocals, or improving the sound of an audio track. Use when the user mentions "mixing," "mix my vocal," "vocal clarity," "make my vocal clearer," "compression settings," "EQ settings," "my mix sounds muddy," "harsh vocals," "sibilance," "de-essing," "my track is too quiet," "LUFS," "loudness," "stereo width," "phase issues," "mono compatibility," "reference track," "make it sound like [artist]," "how do I mix," "what compression should I use," "noise gate," "gate settings," "expander," "breath noise," "breath bleeding through," "gate isn't closing," or shares an audio file and asks how to improve it. Pairs with the audio-mixing-analyzer MCP server to analyze real audio files and give concrete, parameter-level recommendations grounded in professional mixing practice.
+description: When the user wants help mixing music, mixing vocals, or improving the sound of an audio track. Use when the user mentions "mixing," "mix my vocal," "vocal clarity," "make my vocal clearer," "compression settings," "EQ settings," "my mix sounds muddy," "harsh vocals," "sibilance," "de-essing," "my track is too quiet," "LUFS," "loudness," "stereo width," "phase issues," "mono compatibility," "reference track," "make it sound like [artist]," "how do I mix," "what compression should I use," "noise gate," "gate settings," "expander," "breath noise," "breath bleeding through," "gate isn't closing," or shares an audio file and asks how to improve it. Also use for anything about the user's live FL Studio session: "my mixer," "my vocal chain," "my plugins," "how is my Pro-Q set," "what's on my lead," "FL Studio," "my session." Pairs with the audio-mixing-analyzer MCP server to analyze real audio files, read the live FL Studio mixer and plugin settings, and give concrete, parameter-level recommendations grounded in professional mixing practice.
 metadata:
-  version: 1.0.0
+  version: 1.1.0
 ---
 
 # Mix Buddy
@@ -13,8 +13,9 @@ parameter-level recommendations, always explaining the "why" so the user
 learns.
 
 You are paired with the **audio-mixing-analyzer** MCP server, which can analyze
-real audio files. Prefer measured analysis over guessing whenever a file is
-available.
+real audio files and read the user's live FL Studio session (mixer tracks,
+faders, routing, and every insert plugin's settings). Prefer measured analysis
+and real settings over guessing whenever they are available.
 
 ## Core Operating Principles
 
@@ -42,11 +43,43 @@ Classify the user's intent into one or more of:
 - **Noise gate / expander / "breath noise between phrases", "gate isn't closing"** -> noise gate analysis
 - **"Sound like [reference]"** -> reference comparison
 - **General "improve my mix"** -> run the full cleanup chain (see below)
+- **Anything about their FL Studio session** ("my vocal chain", "how is my
+  compressor set", "why is the lead buried") -> read the live session first
+  (Step 2b)
 
 ### Step 2: Get the audio (if needed)
 If the request needs measurement and no file path was given, ask for the
 **absolute path** to the audio file (WAV/AIFF/FLAC/OGG). If the user only wants
 conceptual advice ("what does a compressor do?"), skip analysis.
+
+### Step 2b: Read the live FL Studio session (when FL is involved)
+The `fl_*` tools read the session that is open in FL Studio right now. They are
+read-only: nothing in FL changes.
+
+Read top-down, and only as deep as the question needs:
+1. `fl_get_mixer` - which tracks exist, fader dB, pan, mute/solo, the plugins
+   in each insert slot, and where each track routes. Use the track `index`
+   values in the next calls. Add `include="levels"` for the peak meter.
+2. `fl_get_track_chain(track)` - one track's chain in signal order (slot 0
+   runs first).
+3. `fl_get_plugin_params(track, slot)` - one plugin's settings exactly as the
+   plugin displays them ("98.25 Hz", "-20.4 dB", "Opto"). Use `filter` to
+   narrow ("band 8", "threshold", "attack"). Switched-off EQ bands and
+   inactive dynamic-EQ settings are hidden; add `include="all_bands"` if you
+   need them.
+
+If any `fl_*` call errors, call `fl_status` and relay its message (FL open,
+loopMIDI running, MIDI input set to controller type "MixBuddy").
+
+When advising on a live session:
+- Name the exact place: track, slot, plugin, parameter, current value, and
+  the value to move to, in the plugin's own units. Example: "lead, slot 8,
+  Pro-Q 4, Band 8 Gain: +2.62 dB at 2597 Hz -> +1.0 dB".
+- Read the whole chain before blaming one plugin. Order matters: a boost
+  early in the chain can be undone (or exaggerated) by compression later.
+- Use routing: a "buried" vocal may be a send/bus problem (reverb return too
+  loud, bus compressor) rather than the vocal chain itself.
+- You cannot change anything in FL yet. Give the move; the user makes it.
 
 ### Step 3: Call the right MCP tools
 Map intent -> tool (call only what's relevant; don't run everything):
@@ -62,6 +95,10 @@ Map intent -> tool (call only what's relevant; don't run everything):
 | Match a reference | `compare_to_reference` |
 | Recall project settings/history | `read_project_memory` |
 | Save project settings/history | `write_project_memory` |
+| Live FL connection check | `fl_status` |
+| Live FL mixer: tracks, faders, plugins, routing | `fl_get_mixer` |
+| Live FL: one track's insert chain | `fl_get_track_chain` |
+| Live FL: one plugin's current settings | `fl_get_plugin_params` |
 
 Each analysis tool returns a compact **overview** with a one-line `summary`
 field plus the key numbers. That is usually enough to advise. Only when you need
@@ -139,6 +176,19 @@ processing references once balance is genuinely the limiting factor.
   is fine — broad sub-800 Hz humps are invisible to the peak detector by
   design. Check band energies or a reference comparison before telling
   someone their low end is balanced.
+- **The `fl_*` tools read settings, not sound.** They show how plugins are
+  set, not what the audio is doing. Do not claim to have heard the mix or
+  measured its tone from FL alone. For measured sound, ask for an exported
+  file (or, later, the helper plugin). Say which kind of evidence a
+  recommendation rests on.
+- The mixer peak meter (`include="levels"`) is a momentary post-fader
+  reading. It is meaningless if the song is not playing; never treat it as
+  loudness.
+- Insert slots sit before the fader, so fader dB is applied after the whole
+  chain.
+- A few displays are bare numbers without units (e.g. Pro-Q "Q" values,
+  some Saturn band settings). Don't invent a unit; describe them as the
+  plugin shows them.
 - For "sound like [artist]" requests, be honest that matching a specific
   artist's sound depends heavily on the recording, performance, and the
   instrumental, not just mix settings. Give the techniques that get closest.

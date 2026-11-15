@@ -56,6 +56,14 @@ default; pass `include` to expand detail (e.g. `include="bands,resonances"`).
 | `compare_to_reference` | Loudness + spectral diff vs a reference |
 | `read_project_memory` | Recall stored project context |
 | `write_project_memory` | Persist project context (read-then-replace) |
+| `fl_status` | Live FL Studio connection check |
+| `fl_get_mixer` | Live mixer: tracks, faders, plugins, routing |
+| `fl_get_track_chain` | One track's insert chain in signal order |
+| `fl_get_plugin_params` | One plugin's settings in real units |
+
+The `fl_*` tools read a live FL Studio 2025 session through a small
+controller script and a loopMIDI port. Setup: `fl_bridge/README.md`.
+Quick live check: double-click `fl_bridge/check.bat` with FL open.
 
 ## Setup
 

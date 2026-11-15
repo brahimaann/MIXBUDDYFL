@@ -1,0 +1,297 @@
+# name=MixBuddy
+# MixBuddy FL Studio bridge (read-only, v1).
+#
+# How it works: FL Studio 2025 blocks sockets inside controller scripts, but
+# file reads/writes work. The mix-buddy MCP server writes a request to
+# mb_request.json in this folder, then sends a short MIDI message ("doorbell")
+# on the loopMIDI port this script is attached to. OnMidiMsg wakes up, runs
+# the request against FL's mixer/plugins API, and writes mb_response.json.
+#
+# This script only READS from FL. It never changes a mixer or plugin value.
+
+VERSION = "0.1.0"
+REQUEST = "mb_request.json"
+RESPONSE = "mb_response.json"
+LOG = "mb_log.txt"
+LOG_MAX_BYTES = 200000
+SLOTS = 10
+
+import json
+import os
+import sys
+import time
+
+import mixer
+import plugins
+
+try:
+    import general
+except ImportError:
+    general = None
+try:
+    import ui
+except ImportError:
+    ui = None
+
+_S = {"base": None, "last_id": None, "handled": 0}
+
+
+# ---------------------------------------------------------------- files
+
+def _base_dir():
+    if _S["base"]:
+        return _S["base"]
+    cands = []
+    try:
+        cands.append(os.path.dirname(os.path.abspath(__file__)))
+    except BaseException:
+        pass
+    homes = []
+    for var in ("USERPROFILE", "HOME"):
+        v = os.environ.get(var)
+        if v:
+            homes.append(v)
+    try:
+        homes.append(os.path.expanduser("~"))
+    except BaseException:
+        pass
+    for h in homes:
+        for docs in (("OneDrive", "Documents"), ("Documents",)):
+            cands.append(os.path.join(h, *docs) + "\\Image-Line\\FL Studio\\Settings"
+                         "\\Hardware\\MixBuddy")
+    for c in cands:
+        try:
+            if c and os.path.isfile(os.path.join(c, "device_MixBuddy.py")):
+                _S["base"] = c
+                return c
+        except BaseException:
+            pass
+    _S["base"] = cands[0] if cands else "."
+    return _S["base"]
+
+
+def _path(name):
+    return os.path.join(_base_dir(), name)
+
+
+def _log(msg):
+    line = time.strftime("%H:%M:%S ") + str(msg)
+    print("[MixBuddy] " + line)
+    try:
+        p = _path(LOG)
+        mode = "a"
+        try:
+            if os.path.getsize(p) > LOG_MAX_BYTES:
+                mode = "w"
+        except BaseException:
+            pass
+        with open(p, mode, encoding="utf-8") as f:
+            f.write(line + "\n")
+    except BaseException:
+        pass
+
+
+def _write_response(obj):
+    # os.replace is not reliable inside FL's sandbox, so write in place.
+    # The client re-reads until the JSON parses and the id matches.
+    text = json.dumps(obj, ensure_ascii=False, default=str)
+    with open(_path(RESPONSE), "w", encoding="utf-8") as f:
+        f.write(text)
+
+
+def _safe(fn, *args):
+    try:
+        return fn(*args)
+    except BaseException:
+        return None
+
+
+# ---------------------------------------------------------------- FL reads
+
+def _clean(s):
+    if s is None:
+        return None
+    return str(s).replace(" ", " ").replace("\xa0", " ").strip()
+
+
+def _vol_db(t):
+    db = _safe(mixer.getTrackVolume, t, 1)
+    if db is None:
+        return None
+    try:
+        return round(float(db), 2)
+    except BaseException:
+        return None
+
+
+def _peak(t):
+    v = _safe(mixer.getTrackPeaks, t, 2)
+    return None if v is None else round(float(v), 4)
+
+
+def _slot_list(t):
+    out = []
+    for s in range(SLOTS):
+        if _safe(plugins.isValid, t, s):
+            out.append({"slot": s,
+                        "plugin": _clean(_safe(plugins.getPluginName, t, s)),
+                        "user_name": _clean(_safe(plugins.getPluginName, t, s, 1))})
+    return out
+
+
+def cmd_ping(args):
+    return {
+        "bridge_version": VERSION,
+        "fl_version": _safe(ui.getVersion) if ui else None,
+        "api_version": _safe(general.getVersion) if general else None,
+        "track_count": _safe(mixer.trackCount),
+        "python": sys.version.split()[0],
+    }
+
+
+def cmd_mixer(args):
+    timing = {}
+    t0 = time.time()
+    n = mixer.trackCount()
+    include_empty = bool(args.get("include_empty"))
+    tracks = []
+    for t in range(n):
+        name = _clean(_safe(mixer.getTrackName, t))
+        slots = _slot_list(t)
+        rec = {
+            "index": t,
+            "name": name,
+            "volume_db": _vol_db(t),
+            "volume_norm": _safe(mixer.getTrackVolume, t),
+            "pan": _safe(mixer.getTrackPan, t),
+            "stereo_sep": _safe(mixer.getTrackStereoSep, t),
+            "muted": _safe(mixer.isTrackMuted, t),
+            "solo": _safe(mixer.isTrackSolo, t),
+            "fx_enabled": _safe(mixer.isTrackSlotsEnabled, t),
+            "peak": _peak(t),
+            "plugins": slots,
+        }
+        tracks.append(rec)
+    timing["tracks_ms"] = round((time.time() - t0) * 1000, 1)
+
+    # Routing: which tracks feed which, and at what level.
+    t1 = time.time()
+    for src in tracks:
+        sends = []
+        for dst in range(n):
+            if dst == src["index"]:
+                continue
+            if _safe(mixer.getRouteSendActive, src["index"], dst):
+                lvl = _safe(mixer.getRouteToLevel, src["index"], dst)
+                sends.append({"to": dst, "level_norm": lvl})
+        src["routes_to"] = sends
+    timing["routing_ms"] = round((time.time() - t1) * 1000, 1)
+
+    if not include_empty:
+        used = set()
+        for tr in tracks:
+            for r in tr["routes_to"]:
+                used.add(r["to"])
+        tracks = [tr for tr in tracks
+                  if tr["index"] == 0 or tr["plugins"] or tr["index"] in used
+                  or (tr["name"] and not str(tr["name"]).startswith("Insert "))]
+    return {"track_count": n, "tracks": tracks, "timing": timing}
+
+
+def cmd_track(args):
+    t = int(args["track"])
+    out = {"index": t, "name": _clean(_safe(mixer.getTrackName, t)),
+           "volume_db": _vol_db(t), "pan": _safe(mixer.getTrackPan, t),
+           "peak": _peak(t), "slots": []}
+    for s in _slot_list(t):
+        s["param_count"] = _safe(plugins.getParamCount, t, s["slot"])
+        out["slots"].append(s)
+    return out
+
+
+def cmd_params(args):
+    t = int(args["track"])
+    s = int(args["slot"])
+    if not plugins.isValid(t, s):
+        raise ValueError("no plugin on track %d slot %d" % (t, s))
+    flt = (args.get("filter") or "").lower()
+    count = plugins.getParamCount(t, s)
+    params = []
+    t0 = time.time()
+    for p in range(count):
+        name = _safe(plugins.getParamName, p, t, s)
+        if not name or str(name).startswith("MIDI CC") or str(name).startswith("MIDI Channel"):
+            continue
+        name = _clean(name)
+        if flt and flt not in name.lower():
+            continue
+        params.append({"i": p, "name": name,
+                       "value": _safe(plugins.getParamValue, p, t, s),
+                       "display": _clean(_safe(plugins.getParamValueString, p, t, s))})
+    return {"track": t, "slot": s,
+            "track_name": _clean(_safe(mixer.getTrackName, t)),
+            "plugin": _clean(_safe(plugins.getPluginName, t, s)),
+            "user_name": _clean(_safe(plugins.getPluginName, t, s, 1)),
+            "param_count": count, "params": params,
+            "read_ms": round((time.time() - t0) * 1000, 1)}
+
+
+def cmd_peaks(args):
+    n = mixer.trackCount()
+    return {"peaks": [{"index": t, "peak": _peak(t)} for t in range(n)]}
+
+
+COMMANDS = {"ping": cmd_ping, "mixer": cmd_mixer, "track": cmd_track,
+            "params": cmd_params, "peaks": cmd_peaks}
+
+
+# ---------------------------------------------------------------- request loop
+
+def _serve():
+    try:
+        with open(_path(REQUEST), "r", encoding="utf-8") as f:
+            req = json.loads(f.read())
+    except BaseException as e:
+        _log("could not read request: %s: %s" % (type(e).__name__, e))
+        return
+    rid = req.get("id")
+    if rid is None or rid == _S["last_id"]:
+        return  # nothing new
+    _S["last_id"] = rid
+    cmd = req.get("cmd")
+    t0 = time.time()
+    try:
+        fn = COMMANDS.get(cmd)
+        if fn is None:
+            raise ValueError("unknown command: %r" % (cmd,))
+        resp = {"id": rid, "ok": True, "result": fn(req.get("args") or {})}
+    except BaseException as e:
+        resp = {"id": rid, "ok": False, "error": "%s: %s" % (type(e).__name__, e)}
+    resp["fl_ms"] = round((time.time() - t0) * 1000, 1)
+    try:
+        _write_response(resp)
+    except BaseException as e:
+        _log("could not write response: %s: %s" % (type(e).__name__, e))
+        return
+    _S["handled"] += 1
+    if not resp["ok"]:
+        _log("%s failed: %s" % (cmd, resp["error"]))
+
+
+# ---------------------------------------------------------------- FL callbacks
+
+def OnInit():
+    _log("MixBuddy bridge %s loaded, folder: %s" % (VERSION, _base_dir()))
+
+
+def OnDeInit():
+    _log("MixBuddy bridge unloaded after %d requests" % _S["handled"])
+
+
+def OnMidiMsg(event):
+    # Every message on this port is a doorbell; swallow it so it never plays notes.
+    try:
+        event.handled = True
+    except BaseException:
+        pass
+    _serve()

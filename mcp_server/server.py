@@ -25,6 +25,7 @@ from mcp.server.fastmcp import FastMCP
 sys.path.insert(0, os.path.dirname(__file__))
 import dsp  # noqa: E402
 import memory  # noqa: E402
+import fl_client  # noqa: E402
 
 mcp = FastMCP("audio-mixing-analyzer")
 
@@ -470,6 +471,187 @@ def compare_to_reference(
         "reference_loudness_lufs": round(r_lufs, 2),
         "spectral_difference": spectral_diff,
     }
+
+
+# ---------------------------------------------------------------------------
+# FL Studio live tools (read-only bridge, see fl_bridge/README.md)
+# ---------------------------------------------------------------------------
+_fl = None
+
+
+def _fl_call(cmd: str, args: dict | None = None):
+    """Call the FL bridge, returning (result, None) or (None, error_dict)."""
+    global _fl
+    if _fl is None:
+        _fl = fl_client.FLClient()
+    try:
+        resp = _fl.call(cmd, args)
+        return resp["result"], None
+    except fl_client.FLBridgeError as exc:
+        return None, {"error": str(exc)}
+    except OSError as exc:
+        return None, {"error": f"FL bridge file error: {exc}"}
+
+
+def _peak_db(p):
+    if p is None or p <= 0:
+        return None
+    import math
+    return round(20 * math.log10(p), 1)
+
+
+@mcp.tool()
+def fl_status() -> dict:
+    """
+    Check the live connection to FL Studio and report its version.
+
+    Call this first if any other fl_* tool errors. Requires FL Studio open,
+    loopMIDI running with a "MixBuddy" port, and that port enabled in FL's MIDI
+    settings with controller type "MixBuddy".
+
+    Returns: summary, fl_version, api_version, track_count, bridge_version,
+        round_trip_ms.
+    """
+    global _fl
+    if _fl is None:
+        _fl = fl_client.FLClient()
+    try:
+        resp = _fl.call("ping")
+    except (fl_client.FLBridgeError, OSError) as exc:
+        return {"connected": False, "error": str(exc)}
+    r = resp["result"]
+    return {
+        "connected": True,
+        "summary": f"Connected to FL Studio {r.get('fl_version')} "
+                   f"({r.get('track_count')} mixer tracks, "
+                   f"{resp['round_trip_ms']} ms round trip).",
+        **r,
+        "round_trip_ms": resp["round_trip_ms"],
+    }
+
+
+@mcp.tool()
+def fl_get_mixer(include: str = "") -> dict:
+    """
+    Read the live FL Studio mixer: every track in use, its fader (dB), pan,
+    mute/solo, the plugins in its insert slots, and where it routes.
+
+    Start here to understand a mix before diagnosing anything. Use the track
+    `index` values with fl_get_track_chain / fl_get_plugin_params.
+
+    Args:
+        include: Optional detail (comma-separated). Valid: "levels" (current
+            peak meter, stereo separation, raw fader value), "empty" (also list
+            unused insert tracks).
+
+    Notes: the peak meter is a momentary post-fader reading, so it is only
+    meaningful while the song is playing. Insert slots sit before the fader.
+
+    Returns (overview): summary, tracks[{index, name, volume_db, pan, muted,
+        solo, plugins[{slot, plugin}], routes_to[{to, to_name, level_norm}]}].
+    """
+    inc = _parse_include(include)
+    r, err = _fl_call("mixer", {"include_empty": "empty" in inc})
+    if err:
+        return err
+    names = {t["index"]: t["name"] for t in r["tracks"]}
+    tracks = []
+    n_plugins = 0
+    for t in r["tracks"]:
+        plugs = [{"slot": p["slot"], "plugin": p["plugin"],
+                  **({"name": p["user_name"]} if p.get("user_name")
+                     and p["user_name"] != p["plugin"] else {})}
+                 for p in t["plugins"]]
+        n_plugins += len(plugs)
+        rec = {
+            "index": t["index"], "name": t["name"], "volume_db": t["volume_db"],
+            "pan": round(t["pan"], 2) if t.get("pan") is not None else None,
+            "muted": bool(t.get("muted")), "solo": bool(t.get("solo")),
+            "plugins": plugs,
+            "routes_to": [{"to": x["to"], "to_name": names.get(x["to"]),
+                           "level_norm": round(x["level_norm"], 3)
+                           if x.get("level_norm") is not None else None}
+                          for x in t.get("routes_to", [])],
+        }
+        if not t.get("fx_enabled", True):
+            rec["fx_bypassed"] = True
+        if "levels" in inc:
+            rec["peak_dbfs"] = _peak_db(t.get("peak"))
+            rec["stereo_sep"] = t.get("stereo_sep")
+            rec["volume_norm"] = t.get("volume_norm")
+        tracks.append(rec)
+    muted = [t["name"] for t in tracks if t["muted"]]
+    summary = (f"{len(tracks)} tracks in use, {n_plugins} plugins loaded"
+               + (f"; muted: {', '.join(muted)}" if muted else "") + ".")
+    return {"summary": summary, "tracks": tracks, "fl_timing": r.get("timing")}
+
+
+@mcp.tool()
+def fl_get_track_chain(track: int) -> dict:
+    """
+    List the insert chain on one FL Studio mixer track, in signal order
+    (slot 0 is first), with each plugin's parameter count.
+
+    Args:
+        track: Mixer track index from fl_get_mixer (0 is Master).
+
+    Returns: summary, index, name, volume_db, pan, slots[{slot, plugin,
+        param_count}].
+    """
+    r, err = _fl_call("track", {"track": int(track)})
+    if err:
+        return err
+    chain = " -> ".join(s["plugin"] for s in r["slots"]) or "no plugins"
+    r["summary"] = f"Track {r['index']} '{r['name']}': {chain}."
+    return r
+
+
+@mcp.tool()
+def fl_get_plugin_params(track: int, slot: int, filter: str = "",
+                         include: str = "", limit: int = 150) -> dict:
+    """
+    Read one plugin's settings in real units, exactly as the plugin displays
+    them (e.g. "98.25 Hz", "-20.4 dB", "4.84 ms", "Opto").
+
+    Works for FL native and third-party plugins (FabFilter, Waves, UAD,
+    Soundtoys...). EQ bands that are switched off are hidden by default.
+
+    Args:
+        track: Mixer track index.
+        slot: Insert slot index (0-9) from fl_get_track_chain.
+        filter: Only parameters whose name contains this text (case
+            insensitive), e.g. "band 2", "threshold", "attack".
+        include: Optional detail (comma-separated). Valid: "raw" (normalized
+            0-1 value per parameter, needed later for exact writes),
+            "all_bands" (keep switched-off EQ bands).
+        limit: Max parameters returned (default 150).
+
+    Returns: summary, track_name, plugin, params[{i, name, display}],
+        truncated (bool).
+    """
+    inc = _parse_include(include)
+    r, err = _fl_call("params", {"track": int(track), "slot": int(slot),
+                                 "filter": filter})
+    if err:
+        return err
+    params = r["params"]
+    total = len(params)
+    if "all_bands" not in inc:
+        params = fl_client.compact_params(params)
+    hidden = total - len(params)
+    out_params = []
+    for p in params[: max(1, int(limit))]:
+        rec = {"i": p["i"], "name": p["name"], "display": p["display"]}
+        if "raw" in inc:
+            rec["value"] = round(p["value"], 4) if p.get("value") is not None else None
+        out_params.append(rec)
+    truncated = len(params) > len(out_params)
+    summary = (f"{r['plugin']} on track {r['track']} '{r['track_name']}' slot {r['slot']}: "
+               f"{len(out_params)} parameters"
+               + (f" ({hidden} from switched-off bands hidden)" if hidden else "")
+               + ("; truncated, narrow with `filter`" if truncated else "") + ".")
+    return {"summary": summary, "track_name": r["track_name"], "plugin": r["plugin"],
+            "params": out_params, "truncated": truncated}
 
 
 # ---------------------------------------------------------------------------

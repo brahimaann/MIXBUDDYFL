@@ -14,3 +14,6 @@ _mcp_e2e_*.wav
 # OS
 Thumbs.db
 .DS_Store
+
+# FL bridge local check output
+fl_bridge/check_output.txt

@@ -74,9 +74,13 @@ async def main():
                 "compare_to_reference",
                 "read_project_memory",
                 "write_project_memory",
+                "fl_status",
+                "fl_get_mixer",
+                "fl_get_track_chain",
+                "fl_get_plugin_params",
             ])
             if names == expected:
-                print(f"  PASS  lists all 9 tools: {names}")
+                print(f"  PASS  lists all {len(expected)} tools: {names}")
                 passed += 1
             else:
                 print(f"  FAIL  tool list mismatch.\n    got={names}\n    exp={expected}")
