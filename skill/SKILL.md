@@ -73,7 +73,7 @@ loopMIDI running, MIDI input set to controller type "MixBuddy").
 
 When advising on a live session:
 - Name the exact place: track, slot, plugin, parameter, current value, and
-  the value to move to, in the plugin's own units. Example: "lead, slot 8,
+  the value to move to, in the plugin's own units. Example: "lead, slot 0,
   Pro-Q 4, Band 8 Gain: +2.62 dB at 2597 Hz -> +1.0 dB".
 - Read the whole chain before blaming one plugin. Order matters: a boost
   early in the chain can be undone (or exaggerated) by compression later.
