@@ -493,8 +493,13 @@ def _fl_call(cmd: str, args: dict | None = None):
     try:
         resp = _fl.call(cmd, args)
         result = resp["result"]
-        if isinstance(result, dict) and resp.get("project"):
-            result.setdefault("project", resp["project"])
+        if isinstance(result, dict):
+            name = (fl_client.project_from_titles(fl_client.fl_window_titles())
+                    or resp.get("project"))
+            if name and "fl studio" not in str(name).lower():
+                result["project"] = name
+            else:
+                result.pop("project", None)
         return result, None
     except fl_client.FLBridgeError as exc:
         return None, {"error": str(exc)}
@@ -532,7 +537,7 @@ def fl_status() -> dict:
     return {
         "connected": True,
         "summary": f"Connected to FL Studio {r.get('fl_version')}, project "
-                   f"'{(r.get('project') or {}).get('title') or 'unknown'}' "
+                   f"'{(fl_client.project_from_titles(fl_client.fl_window_titles()) or resp.get('project') or 'unknown')}' "
                    f"({r.get('track_count')} mixer tracks, "
                    f"{resp['round_trip_ms']} ms round trip).",
         **r,

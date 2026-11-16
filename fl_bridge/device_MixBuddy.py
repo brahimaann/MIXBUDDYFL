@@ -15,7 +15,7 @@
 # MixBuddy Tap plugins to the number of the mixer track they sit on. It
 # never changes any other plugin or mixer value.
 
-VERSION = "0.3.0"
+VERSION = "0.3.1"
 TAP_PREFIX = "mixbuddy tap"
 TAP_MAX = 999  # Tap ID range is 0..TAP_MAX; TAP_MAX itself means "Unassigned"
 REQUEST = "mb_request.json"
@@ -153,17 +153,45 @@ def _slot_list(t):
     return out
 
 
-def _project():
-    """Best available name for the open project. FL exposes it in different
-    places across versions, so try them in order and say which one worked."""
-    for mod, fn in ((general, "getProjectTitle"), (ui, "getProjectTitle"),
-                    (ui, "getProgTitle")):
-        f = getattr(mod, fn, None) if mod else None
-        if f is None:
+_PROJECT_HINTS = ("proj", "file", "title", "caption", "song", "name")
+
+
+def _project_candidates():
+    """Every zero-argument getter in FL's modules whose name suggests it may
+    know the project, with its current value. Used to find the project name
+    on this FL version."""
+    out = {}
+    for modname in ("general", "ui", "transport", "arrangement", "playlist", "patterns"):
+        try:
+            mod = __import__(modname)
+        except BaseException:
             continue
-        v = _safe(f)
-        if v:
-            return {"title": _clean(v), "source": fn}
+        for attr in dir(mod):
+            low = attr.lower()
+            if not low.startswith("get") or not any(h in low for h in _PROJECT_HINTS):
+                continue
+            try:
+                v = getattr(mod, attr)()
+            except BaseException:
+                continue
+            if v not in (None, "", 0):
+                out["%s.%s" % (modname, attr)] = _clean(v)[:120]
+    return out
+
+
+def _project():
+    """Best available name for the open project: prefer anything that looks
+    like an .flp name, then known getters, then the program title."""
+    cands = _project_candidates()
+    for k, v in cands.items():
+        if ".flp" in v.lower():
+            return {"title": v, "source": k}
+    for k in ("general.getProjectTitle", "ui.getProjectTitle", "general.getSongTitle"):
+        if cands.get(k):
+            return {"title": cands[k], "source": k}
+    for k, v in cands.items():
+        if "title" in k.lower() and "fl studio" not in v.lower():
+            return {"title": v, "source": k}
     return {"title": None, "source": None}
 
 
@@ -381,6 +409,10 @@ def OnInit():
     except BaseException:
         pass
     _log("open project: %s" % (_project(),))
+    _log("project name candidates: %s" % (_project_candidates(),))
+    if device is not None:
+        _log("device: assigned=%s port=%s name=%s" % (
+            _safe(device.isAssigned), _safe(device.getPortNumber), _safe(device.getName)))
 
 
 def OnUpdateMeters():

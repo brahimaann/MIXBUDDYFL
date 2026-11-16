@@ -133,7 +133,86 @@ class WinMidiDoorbell:
             pass
 
 
+# ---------------------------------------------------------------- project name
+
+def fl_window_titles() -> list[str]:
+    """Titles of visible top-level windows that belong to FL Studio. FL's
+    script API does not expose the project file name, but FL's main window
+    title does. Windows only; returns [] elsewhere or on any failure."""
+    if sys.platform != "win32":
+        return []
+    try:
+        import ctypes
+        from ctypes import wintypes
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        psapi = ctypes.WinDLL("psapi", use_last_error=True)
+        titles = []
+        EnumProc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+        def exe_of(hwnd):
+            pid = wintypes.DWORD()
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            h = kernel32.OpenProcess(0x1000, False, pid.value)  # QUERY_LIMITED_INFORMATION
+            if not h:
+                return ""
+            try:
+                buf = ctypes.create_unicode_buffer(512)
+                n = psapi.GetProcessImageFileNameW(h, buf, 512)
+                return buf.value[:n].lower() if n else ""
+            finally:
+                kernel32.CloseHandle(h)
+
+        def cb(hwnd, _):
+            if not user32.IsWindowVisible(hwnd):
+                return True
+            length = user32.GetWindowTextLengthW(hwnd)
+            if length <= 0:
+                return True
+            buf = ctypes.create_unicode_buffer(length + 1)
+            user32.GetWindowTextW(hwnd, buf, length + 1)
+            exe = exe_of(hwnd)
+            if "fl64" in exe or "fl.exe" in exe or "fl studio" in buf.value.lower():
+                titles.append(buf.value)
+            return True
+
+        user32.EnumWindows(EnumProc(cb), 0)
+        return titles
+    except Exception:
+        return []
+
+
+def project_from_titles(titles: list[str]) -> str | None:
+    """Pull the project name out of FL window titles such as
+    'KEEP GOING 2.flp - FL Studio 2025' or 'FL Studio 2025 - KEEP GOING 2'."""
+    for t in titles:
+        m = re.search(r"([^\\/]+?\.flp)", t, re.I)
+        if m:
+            return m.group(1).strip()
+    for t in titles:
+        parts = [x.strip() for x in re.split(r"\s+[-\u2013\u2014]\s+", t) if x.strip()]
+        rest = [x for x in parts if not re.match(r"(?i)^fl studio", x)]
+        if rest and len(parts) > 1:
+            return rest[0]
+    return None
+
+
 # ---------------------------------------------------------------- client
+
+def _replace_with_retry(src: str, dst: str, tries: int = 100, wait: float = 0.01):
+    """os.replace, retried while FL briefly has dst open. On Windows a file
+    another process is reading can't be replaced (PermissionError 13); FL
+    holds the request file for a few ms while it reads it."""
+    for i in range(tries):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if i == tries - 1:
+                raise FLBridgeError("FL kept the request file locked for over a second "
+                                    "(%s). Try again." % dst)
+            time.sleep(wait)
+
 
 class FLClient:
     def __init__(self, script_dir: str | None = None, doorbell=None,
@@ -162,7 +241,7 @@ class FLClient:
         tmp = req_path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump({"id": rid, "cmd": cmd, "args": args or {}}, f)
-        os.replace(tmp, req_path)
+        _replace_with_retry(tmp, req_path)
 
         t0 = time.perf_counter()
         self._ring()

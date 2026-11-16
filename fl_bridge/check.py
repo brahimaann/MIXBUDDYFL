@@ -45,6 +45,9 @@ def main():
               "'MixBuddy' enabled with Controller type 'MixBuddy'.")
         return
     print("   " + json.dumps(r["result"]))
+    titles = fl_client.fl_window_titles()
+    print("   FL window titles: %s" % titles)
+    print("   project: %s" % fl_client.project_from_titles(titles))
     print("   round trip %s ms (FL work %s ms)" % (r["round_trip_ms"], r["fl_ms"]))
 
     pings = []
