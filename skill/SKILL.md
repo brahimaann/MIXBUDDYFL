@@ -83,8 +83,8 @@ Read top-down, and only as deep as the question needs:
    `fl_analyze_track_live(track)` analyzes the last few seconds that played
    through it. Prefer this over stems when the track has a tap. The tap only
    hears plugins before it (pre-fader), so check `is_last_in_chain`. If a
-   track has no tap, suggest adding it as the last insert with a unique
-   Tap ID.
+   track has no tap, suggest adding it as the last insert. Its ID is set to
+   the track number automatically; never ask the user to set it.
 
 If any `fl_*` call errors, call `fl_status` and relay its message (FL open,
 loopMIDI running, MIDI input set to controller type "MixBuddy").

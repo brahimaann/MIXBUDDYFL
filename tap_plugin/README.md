@@ -19,15 +19,19 @@ Needs Rust (rustup) and the MSVC linker (Visual Studio Build Tools,
 1. In FL: Options > Manage plugins > Find plugins.
 2. Add **MixBuddy Tap** as the **last** insert on each track you want Claude
    to hear (it hears everything before it in the chain, before the fader).
-3. Give every instance a different **Tap ID** (1-64).
-4. Play the song, then ask Claude to analyze the track.
+3. Play the song and ask Claude about the track.
+
+You don't set anything on the plugin. Its **Tap ID** shows "Unassigned"
+until mix-buddy first looks for taps; the MixBuddy controller script then
+sets it to the mixer track number (Master = 0). If you move the plugin to
+another track, it is re-assigned the next time Claude checks.
 
 ## Design
 
 - Audio thread: copies each block into the ring buffer, then publishes the
   write position with release ordering. No allocation or locking.
-- Changing Tap ID while running reopens the file once (a one-off click is
-  possible while you edit it).
+- When the Tap ID changes, the plugin reopens its file once inside the audio
+  callback (a one-off click is possible at that moment).
 - File layout is documented in `src/lib.rs`; the reader is
   `mcp_server/tap_reader.py`.
 

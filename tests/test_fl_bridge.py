@@ -54,7 +54,7 @@ PLUGS = {
         ("XLFO 1 Step 1 Value", 0.5, "0.5 "), ("XLFO 2 Frequency", 0.5, "0.53 Hz "),
         ("Num Active XLFO 2 Steps", 0.1, "2 "),
     ]),
-    (2, 1): ("MixBuddy Tap", [("Tap ID", 0.1, "7")]),
+    (2, 1): ("MixBuddy Tap", [("Tap ID", 1.0, "Unassigned")]),
     (3, 0): ("Mystery Plug", [("Amount", 0.5, "5.0 ")]),
 }
 
@@ -81,6 +81,15 @@ def _fake_fl():
     plugins.getParamName = lambda p, i, s=-1, g=False: PLUGS[(i, s)][1][p][0]
     plugins.getParamValue = lambda p, i, s=-1, g=False: PLUGS[(i, s)][1][p][1]
     plugins.getParamValueString = lambda p, i, s=-1, g=False: PLUGS[(i, s)][1][p][2]
+    plugins.writes = []
+
+    def set_param(value, p, i, s=-1, pickup=0, g=False):
+        # Behaves like MixBuddy Tap's Tap ID: 0..999, 999 shown as "Unassigned".
+        plugins.writes.append((i, s, p, value))
+        name, _v, _d = PLUGS[(i, s)][1][p]
+        n = round(value * 999)
+        PLUGS[(i, s)][1][p] = (name, value, "Unassigned" if n == 999 else str(n))
+    plugins.setParamValue = set_param
 
     general = types.ModuleType("general")
     general.getVersion = lambda: 38
@@ -204,21 +213,31 @@ def main():
     frames = np.zeros((cap, 2), dtype="<f4")
     frames[:n, 0] = 0.3 * np.sin(2 * np.pi * 330 * tt)
     frames[:n, 1] = frames[:n, 0]
-    hdr = struct.pack("<8sIIIIII QQQQ", b"MBTAP001", 1, 7, sr, 2, cap, 0,
+    hdr = struct.pack("<8sIIIIII QQQQ", b"MBTAP001", 1, 2, sr, 2, cap, 0,
                       n, int(time.time() * 1000), 1, 0)
-    with open(os.path.join(tdir, "tap_7.bin"), "wb") as fh:
-        fh.write(hdr + frames.tobytes())
 
     lt = server.fl_list_taps()
     tp = (lt.get("taps") or [{}])[0]
-    check("taps found with track, slot and ID",
-          tp.get("track_name") == "verb" and tp.get("slot") == 1 and tp.get("tap_id") == 7
-          and tp.get("live") is True and tp.get("is_last_in_chain") is True, lt)
+    check("tap found on its track and slot",
+          tp.get("track_name") == "verb" and tp.get("slot") == 1
+          and tp.get("is_last_in_chain") is True, lt)
+    import plugins as fl_plugins
+    check("bridge sets Tap ID to the track number",
+          fl_plugins.writes == [(2, 1, 0, 2 / 999.0)], fl_plugins.writes)
+    check("fresh tap flagged as just assigned",
+          any("just assigned" in p for p in lt.get("problems", [])), lt)
+
+    # The plugin reopens tap_2.bin and audio flows (simulated here).
+    with open(os.path.join(tdir, "tap_2.bin"), "wb") as fh:
+        fh.write(hdr + frames.tobytes())
+    lt2 = server.fl_list_taps()
+    check("second look: no rewrite, tap live",
+          len(fl_plugins.writes) == 1 and lt2["taps"][0]["live"] is True
+          and not lt2["problems"], lt2)
     la = server.fl_analyze_track_live(2, seconds=3, analyses="loudness,spectrum")
     check("live analysis reads the tap",
-          (la.get("tap") or {}).get("tap_id") == 7
-          and "integrated_loudness_lufs" in la.get("results", {}).get("loudness", {})
-          and "warning" not in la, la)
+          "integrated_loudness_lufs" in la.get("results", {}).get("loudness", {})
+          and la.get("track", {}).get("name") == "verb" and "warning" not in la, la)
     nt = server.fl_analyze_track_live(1)
     check("track without a tap explains what to do",
           "No MixBuddy Tap" in nt.get("error", ""), nt)

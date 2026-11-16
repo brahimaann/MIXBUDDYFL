@@ -7,9 +7,13 @@
 # on the loopMIDI port this script is attached to. OnMidiMsg wakes up, runs
 # the request against FL's mixer/plugins API, and writes mb_response.json.
 #
-# This script only READS from FL. It never changes a mixer or plugin value.
+# It only READS from FL, with one exception: "sync_taps" sets the Tap ID of
+# MixBuddy Tap plugins to the number of the mixer track they sit on. It
+# never changes any other plugin or mixer value.
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
+TAP_PREFIX = "mixbuddy tap"
+TAP_MAX = 999  # Tap ID range is 0..TAP_MAX; TAP_MAX itself means "Unassigned"
 REQUEST = "mb_request.json"
 RESPONSE = "mb_response.json"
 LOG = "mb_log.txt"
@@ -241,8 +245,47 @@ def cmd_peaks(args):
     return {"peaks": [{"index": t, "peak": _peak(t)} for t in range(n)]}
 
 
+def _tap_param(t, s):
+    count = _safe(plugins.getParamCount, t, s) or 0
+    for p in range(min(count, 64)):
+        if _safe(plugins.getParamName, p, t, s) == "Tap ID":
+            return p
+    return None
+
+
+def cmd_sync_taps(args):
+    """Find every MixBuddy Tap and set its Tap ID to its mixer track number."""
+    only = args.get("track")
+    n = mixer.trackCount()
+    taps = []
+    for t in range(n):
+        if only is not None and t != int(only):
+            continue
+        for s in range(SLOTS):
+            if not _safe(plugins.isValid, t, s):
+                continue
+            name = _clean(_safe(plugins.getPluginName, t, s)) or ""
+            if not name.lower().startswith(TAP_PREFIX):
+                continue
+            rec = {"track": t, "track_name": _clean(_safe(mixer.getTrackName, t)),
+                   "slot": s, "tap_id": t}
+            p = _tap_param(t, s)
+            if p is None:
+                rec["error"] = "Tap ID parameter not found"
+            elif t > TAP_MAX - 1:
+                rec["error"] = "track number above %d" % (TAP_MAX - 1)
+            else:
+                before = _clean(_safe(plugins.getParamValueString, p, t, s))
+                rec["was"] = before
+                if before != str(t):
+                    plugins.setParamValue(t / float(TAP_MAX), p, t, s)
+                    rec["changed"] = True
+            taps.append(rec)
+    return {"taps": taps}
+
+
 COMMANDS = {"ping": cmd_ping, "mixer": cmd_mixer, "track": cmd_track,
-            "params": cmd_params, "peaks": cmd_peaks}
+            "params": cmd_params, "peaks": cmd_peaks, "sync_taps": cmd_sync_taps}
 
 
 # ---------------------------------------------------------------- request loop

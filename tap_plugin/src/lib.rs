@@ -5,9 +5,9 @@
 //! file so the mix-buddy MCP server (Python) can analyze a mixer track live.
 //!
 //! File: `<temp dir>/mixbuddy/tap_<id>.bin` (on Windows, %TEMP%\mixbuddy).
-//! The "Tap ID" parameter picks <id>; give every instance a different ID.
-//! FL's controller script reads that parameter to know which mixer track
-//! each tap sits on.
+//! The "Tap ID" parameter picks <id>. You never set it by hand: the
+//! MixBuddy FL controller script sets it to the mixer track number the tap
+//! sits on (Master = 0). A fresh instance shows "Unassigned" until then.
 //!
 //! Layout (little endian), see `ring` below and `mcp_server/tap_reader.py`:
 //!   0  magic  b"MBTAP001"
@@ -29,6 +29,9 @@ use std::sync::Arc;
 pub mod ring;
 
 const CAPACITY_SECONDS: f32 = 10.0;
+/// Highest Tap ID, also the "not assigned yet" value. The controller script
+/// maps track number n to the normalized value n / UNASSIGNED.
+pub const UNASSIGNED: i32 = 999;
 
 pub struct MixBuddyTap {
     params: Arc<TapParams>,
@@ -39,7 +42,8 @@ pub struct MixBuddyTap {
 
 #[derive(Params)]
 struct TapParams {
-    /// Which tap file this instance writes. Unique per instance.
+    /// Which tap file this instance writes: the mixer track number, set
+    /// automatically by FL's MixBuddy controller script.
     #[id = "tapid"]
     pub tap_id: IntParam,
 }
@@ -47,7 +51,15 @@ struct TapParams {
 impl Default for TapParams {
     fn default() -> Self {
         Self {
-            tap_id: IntParam::new("Tap ID", 1, IntRange::Linear { min: 1, max: 64 }),
+            tap_id: IntParam::new("Tap ID", UNASSIGNED,
+                                  IntRange::Linear { min: 0, max: UNASSIGNED })
+                .with_value_to_string(Arc::new(|v| {
+                    if v == UNASSIGNED { "Unassigned".to_string() } else { v.to_string() }
+                }))
+                .with_string_to_value(Arc::new(|s| {
+                    let s = s.trim();
+                    if s.eq_ignore_ascii_case("unassigned") { Some(UNASSIGNED) } else { s.parse().ok() }
+                })),
         }
     }
 }

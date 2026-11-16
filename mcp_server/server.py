@@ -819,66 +819,59 @@ def fl_analyze_track_stem(track: int, file_path: str = "", stems_folder: str = "
 # ---------------------------------------------------------------------------
 # Live audio from MixBuddy Tap plugins
 # ---------------------------------------------------------------------------
-_TAP_NAME = "mixbuddy tap"
-
-
-def _tap_slots(tracks: list[dict]) -> list[dict]:
-    """Find MixBuddy Tap instances in a mixer snapshot and read their Tap IDs."""
-    found = []
-    for t in tracks:
-        n_slots = len(t.get("plugins") or [])
-        for pos, p in enumerate(t.get("plugins") or []):
-            if not (p.get("plugin") or "").lower().startswith(_TAP_NAME):
-                continue
-            r, err = _fl_call("params", {"track": t["index"], "slot": p["slot"],
-                                         "filter": "Tap ID"})
-            tap_id = None
-            if r:
-                for q in r["params"]:
-                    if q["name"] == "Tap ID":
-                        m = re.match(r"^\s*(\d+)", q.get("display") or "")
-                        tap_id = int(m.group(1)) if m else None
-            found.append({"track": t["index"], "track_name": t["name"], "slot": p["slot"],
-                          "tap_id": tap_id, "is_last_in_chain": pos == n_slots - 1,
-                          "error": err.get("error") if err else None})
-    return found
+def _sync_taps(track: int | None = None):
+    """Ask FL to set every MixBuddy Tap's ID to its mixer track number, and
+    return the taps found as (list, error)."""
+    args = {} if track is None else {"track": int(track)}
+    r, err = _fl_call("sync_taps", args)
+    if err:
+        if "unknown command" in err.get("error", ""):
+            return None, {"error": "The MixBuddy controller script in FL is out of date. "
+                                   "Copy fl_bridge/device_MixBuddy.py into FL's Hardware\\"
+                                   "MixBuddy folder and click Reload script in FL."}
+        return None, err
+    return r["taps"], None
 
 
 @mcp.tool()
 def fl_list_taps() -> dict:
     """
     List MixBuddy Tap plugins in the FL mixer: which track and slot each sits
-    on, its Tap ID, and whether audio is flowing through it right now.
+    on, and whether audio is flowing through it right now.
 
-    A tap is a passthrough plugin that lets fl_analyze_track_live hear a
-    mixer track. It hears whatever comes before it in the chain (put it last
-    for the processed sound), and insert slots sit before the fader.
+    Each tap's ID is set automatically to its mixer track number (Master = 0)
+    whenever this or fl_analyze_track_live runs; the user never sets it.
+    A tap hears whatever comes before it in the chain (put it last for the
+    processed sound), and insert slots sit before the fader.
 
-    Returns: summary, taps[{track, track_name, slot, tap_id, live,
+    Returns: summary, taps[{track, track_name, slot, live,
         seconds_since_audio, is_last_in_chain}], problems[str].
     """
-    r, err = _fl_call("mixer", {"include_empty": True})
+    found, err = _sync_taps()
     if err:
         return err
+    mix, _ = _fl_call("mixer", {"include_empty": True})
+    last_slot = {t["index"]: max((p["slot"] for p in t["plugins"]), default=-1)
+                 for t in (mix or {}).get("tracks", [])}
     files = {t["tap_id"]: t for t in tap_reader.list_taps()}
-    taps, problems = [], []
-    seen = {}
-    for t in _tap_slots(r["tracks"]):
-        f = files.get(t["tap_id"]) if t["tap_id"] is not None else None
-        t["live"] = bool(f and f["live"])
-        t["seconds_since_audio"] = f["seconds_since_audio"] if f else None
-        if t["tap_id"] is None:
-            problems.append(f"Couldn't read the Tap ID on '{t['track_name']}' slot {t['slot']}.")
-        elif t["tap_id"] in seen:
-            problems.append(f"Tap ID {t['tap_id']} is used on both '{seen[t['tap_id']]}' and "
-                            f"'{t['track_name']}'. Give each tap its own ID.")
-        else:
-            seen[t["tap_id"]] = t["track_name"]
-        if f is None and t["tap_id"] is not None:
-            problems.append(f"No audio file yet for Tap ID {t['tap_id']} "
-                            f"('{t['track_name']}'): press play in FL.")
-        t.pop("error", None)
-        taps.append(t)
+    taps, problems, per_track = [], [], {}
+    for t in found:
+        per_track.setdefault(t["track"], []).append(t["slot"])
+        f = files.get(t["tap_id"])
+        rec = {"track": t["track"], "track_name": t["track_name"], "slot": t["slot"],
+               "live": bool(f and f["live"]),
+               "seconds_since_audio": f["seconds_since_audio"] if f else None,
+               "is_last_in_chain": last_slot.get(t["track"]) == t["slot"]}
+        if t.get("error"):
+            problems.append(f"'{t['track_name']}' slot {t['slot']}: {t['error']}.")
+        elif f is None or t.get("changed"):
+            problems.append(f"'{t['track_name']}': tap just assigned; play the song for "
+                            "a few seconds so it fills.")
+        taps.append(rec)
+    for track, slots in per_track.items():
+        if len(slots) > 1:
+            problems.append(f"Track {track} has {len(slots)} taps (slots {slots}); they share "
+                            "one audio file. Keep one, as the last insert.")
     live = sum(1 for t in taps if t["live"])
     summary = (f"{len(taps)} taps found, {live} receiving audio now."
                if taps else "No MixBuddy Tap plugins in the mixer.")
@@ -893,8 +886,9 @@ def fl_analyze_track_live(track: int, seconds: float = 8.0,
     plugin on that track (the last few seconds of audio, up to 10 s).
 
     Requires a MixBuddy Tap in one of the track's insert slots and the song
-    playing (or just played) in FL. For tracks without a tap, use
-    fl_analyze_track_stem with an export instead.
+    playing (or just played) in FL. The tap's ID is assigned to the track
+    automatically. For tracks without a tap, use fl_analyze_track_stem with an
+    export instead.
 
     Args:
         track: Mixer track index from fl_get_mixer.
@@ -905,8 +899,8 @@ def fl_analyze_track_live(track: int, seconds: float = 8.0,
     Notes: the tap hears the chain up to its slot (pre-fader). If it is not
     the last plugin, later plugins are not included; say so.
 
-    Returns: summary, track{index, name, chain}, tap{tap_id, slot,
-        is_last_in_chain, seconds_since_audio}, results{analysis: overview}.
+    Returns: summary, track{index, name, chain}, tap{slot, is_last_in_chain,
+        seconds_since_audio}, results{analysis: overview}.
     """
     want = [a.strip().lower() for a in (analyses or "").split(",") if a.strip()]
     bad = [a for a in want if a not in _STEM_ANALYSES]
@@ -917,13 +911,19 @@ def fl_analyze_track_live(track: int, seconds: float = 8.0,
     if err:
         return err
     plugs = [{"slot": s["slot"], "plugin": s["plugin"]} for s in info["slots"]]
-    taps = _tap_slots([{"index": info["index"], "name": info["name"], "plugins": plugs}])
-    if not taps:
+    found, serr = _sync_taps(info["index"])
+    if serr:
+        return serr
+    if not found:
         return {"error": f"No MixBuddy Tap on track {info['index']} '{info['name']}'. "
                          "Add it as the last insert (or use fl_analyze_track_stem)."}
-    tap = taps[-1]
-    if tap["tap_id"] is None:
-        return {"error": "Found MixBuddy Tap but couldn't read its Tap ID."}
+    tap = found[-1]
+    if tap.get("error"):
+        return {"error": f"MixBuddy Tap on '{info['name']}': {tap['error']}."}
+    tap["is_last_in_chain"] = tap["slot"] == max(p["slot"] for p in plugs)
+    if tap.get("changed"):
+        return {"error": f"The tap on '{info['name']}' was just assigned to this track. "
+                         "Play the song for a few seconds, then ask again."}
     try:
         audio, sr, _h = tap_reader.read_tap(tap["tap_id"], seconds)
     except ValueError as exc:
@@ -947,11 +947,11 @@ def fl_analyze_track_live(track: int, seconds: float = 8.0,
     chain = " -> ".join(p["plugin"] for p in plugs)
     lines = [f"{a}: {r.get('summary') or r.get('error')}" for a, r in results.items()]
     out = {
-        "summary": (f"Live audio from '{info['name']}' ({len(audio) / sr:.1f} s via Tap "
-                    f"{tap['tap_id']}). " + " | ".join(lines)),
+        "summary": (f"Live audio from '{info['name']}' ({len(audio) / sr:.1f} s via its "
+                    "MixBuddy Tap). " + " | ".join(lines)),
         "track": {"index": info["index"], "name": info["name"], "chain": chain,
                   "volume_db": info.get("volume_db")},
-        "tap": {"tap_id": tap["tap_id"], "slot": tap["slot"],
+        "tap": {"slot": tap["slot"],
                 "is_last_in_chain": tap["is_last_in_chain"],
                 "seconds_since_audio": status.get("seconds_since_audio")},
         "results": results,
