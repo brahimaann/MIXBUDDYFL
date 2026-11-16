@@ -492,7 +492,10 @@ def _fl_call(cmd: str, args: dict | None = None):
         _fl = fl_client.FLClient()
     try:
         resp = _fl.call(cmd, args)
-        return resp["result"], None
+        result = resp["result"]
+        if isinstance(result, dict) and resp.get("project"):
+            result.setdefault("project", resp["project"])
+        return result, None
     except fl_client.FLBridgeError as exc:
         return None, {"error": str(exc)}
     except OSError as exc:
@@ -528,7 +531,8 @@ def fl_status() -> dict:
     r = resp["result"]
     return {
         "connected": True,
-        "summary": f"Connected to FL Studio {r.get('fl_version')} "
+        "summary": f"Connected to FL Studio {r.get('fl_version')}, project "
+                   f"'{(r.get('project') or {}).get('title') or 'unknown'}' "
                    f"({r.get('track_count')} mixer tracks, "
                    f"{resp['round_trip_ms']} ms round trip).",
         **r,
@@ -587,9 +591,11 @@ def fl_get_mixer(include: str = "") -> dict:
             rec["volume_norm"] = t.get("volume_norm")
         tracks.append(rec)
     muted = [t["name"] for t in tracks if t["muted"]]
-    summary = (f"{len(tracks)} tracks in use, {n_plugins} plugins loaded"
+    summary = (f"Project '{r.get('project') or 'unknown'}': "
+               f"{len(tracks)} tracks in use, {n_plugins} plugins loaded"
                + (f"; muted: {', '.join(muted)}" if muted else "") + ".")
-    return {"summary": summary, "tracks": tracks, "fl_timing": r.get("timing")}
+    return {"summary": summary, "project": r.get("project"), "tracks": tracks,
+            "fl_timing": r.get("timing")}
 
 
 @mcp.tool()
@@ -608,7 +614,8 @@ def fl_get_track_chain(track: int) -> dict:
     if err:
         return err
     chain = " -> ".join(s["plugin"] for s in r["slots"]) or "no plugins"
-    r["summary"] = f"Track {r['index']} '{r['name']}': {chain}."
+    r["summary"] = (f"Project '{r.get('project') or 'unknown'}', track {r['index']} "
+                    f"'{r['name']}': {chain}.")
     return r
 
 
@@ -657,11 +664,13 @@ def fl_get_plugin_params(track: int, slot: int, filter: str = "",
             rec["value"] = round(p["value"], 4) if p.get("value") is not None else None
         out_params.append(rec)
     truncated = len(params) > len(out_params)
-    summary = (f"{r['plugin']} on track {r['track']} '{r['track_name']}' slot {r['slot']}: "
+    summary = (f"Project '{r.get('project') or 'unknown'}': "
+               f"{r['plugin']} on track {r['track']} '{r['track_name']}' slot {r['slot']}: "
                f"{len(out_params)} parameters"
                + (f" ({hidden} from switched-off bands hidden)" if hidden else "")
                + ("; truncated, narrow with `filter`" if truncated else "") + ".")
-    out = {"summary": summary, "track_name": r["track_name"], "plugin": r["plugin"],
+    out = {"summary": summary, "project": r.get("project"),
+           "track_name": r["track_name"], "plugin": r["plugin"],
            "params": out_params, "truncated": truncated}
     note = plugin_notes.lookup(r["plugin"])
     if note:

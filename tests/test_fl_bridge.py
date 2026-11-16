@@ -95,6 +95,11 @@ def _fake_fl():
     general.getVersion = lambda: 38
     ui = types.ModuleType("ui")
     ui.getVersion = lambda mode=0: "Producer Edition v25.1.6 [build 4997]"
+    ui.getProgTitle = lambda: "KEEP GOING 2.flp"
+    device = types.ModuleType("device")
+    device.meters_requested = []
+    device.setHasMeters = lambda: device.meters_requested.append(True)
+    sys.modules["device"] = device
     sys.modules.update(mixer=mixer, plugins=plugins, general=general, ui=ui)
 
 
@@ -125,6 +130,8 @@ def main():
     r = server.fl_status()
     check("fl_status connects", r.get("connected") is True, r)
     check("fl_status reports FL version", "25.1.6" in str(r.get("fl_version")))
+    check("fl_status names the open project", "KEEP GOING 2" in r.get("summary", ""), r)
+    check("script asked FL for meter ticks", sys.modules["device"].meters_requested == [True])
 
     m = server.fl_get_mixer()
     names = [t["name"] for t in m.get("tracks", [])]
@@ -134,6 +141,23 @@ def main():
           [p["plugin"] for p in lead["plugins"]] == ["Pro-Q 4", "Fresh Air", "CLA-76 Stereo"])
     check("mixer resolves routing names",
           {x["to_name"] for x in lead["routes_to"]} == {"Master", "verb"}, lead["routes_to"])
+
+    check("mixer summary names the project", "KEEP GOING 2" in m.get("summary", ""), m)
+
+    # Polling: a client that only writes the request file gets an answer on
+    # the next meter tick, with no MIDI doorbell.
+    import json as _json
+    with open(os.path.join(folder, "mb_request.json"), "w", encoding="utf-8") as fh:
+        _json.dump({"id": "poll-1", "cmd": "ping", "args": {}}, fh)
+    import time as _t
+    os.utime(os.path.join(folder, "mb_request.json"), (_t.time() + 5, _t.time() + 5))
+    fl.OnUpdateMeters()
+    with open(os.path.join(folder, "mb_response.json"), encoding="utf-8") as fh:
+        pr = _json.load(fh)
+    check("meter tick serves a file-only request",
+          pr.get("id") == "poll-1" and pr.get("project") == "KEEP GOING 2.flp", pr)
+    fl.OnUpdateMeters()
+    check("unchanged request file is not served twice", fl._S["handled"] >= 1)
 
     c = server.fl_get_track_chain(1)
     check("track chain summary", "Pro-Q 4 -> Fresh Air -> CLA-76" in c.get("summary", ""), c)

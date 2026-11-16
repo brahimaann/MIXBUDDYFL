@@ -90,6 +90,9 @@ If any `fl_*` call errors, call `fl_status` and relay its message (FL open,
 loopMIDI running, MIDI input set to controller type "MixBuddy").
 
 When advising on a live session:
+- Every `fl_*` result names the open project. State it in your answer, and
+  never reuse settings read from a different project or an earlier read:
+  if the project changed, read again.
 - Name the exact place: track, slot, plugin, parameter, current value, and
   the value to move to, in the plugin's own units. Example: "lead, slot 0,
   Pro-Q 4, Band 8 Gain: +2.62 dB at 2597 Hz -> +1.0 dB".

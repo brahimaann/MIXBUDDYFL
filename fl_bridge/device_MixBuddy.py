@@ -2,16 +2,20 @@
 # MixBuddy FL Studio bridge (read-only, v1).
 #
 # How it works: FL Studio 2025 blocks sockets inside controller scripts, but
-# file reads/writes work. The mix-buddy MCP server writes a request to
-# mb_request.json in this folder, then sends a short MIDI message ("doorbell")
-# on the loopMIDI port this script is attached to. OnMidiMsg wakes up, runs
-# the request against FL's mixer/plugins API, and writes mb_response.json.
+# file reads/writes work. A client writes a request to mb_request.json in
+# this folder. The script notices it either way:
+#   * polling: device.setHasMeters() makes FL call OnUpdateMeters regularly,
+#     and the script checks the request file's timestamp there (and in
+#     OnIdle, if FL calls it), so a client only has to write the file;
+#   * doorbell: a short MIDI message on the loopMIDI port wakes OnMidiMsg.
+# It runs the request against FL's mixer/plugins API and writes
+# mb_response.json. Every response names the open project.
 #
 # It only READS from FL, with one exception: "sync_taps" sets the Tap ID of
 # MixBuddy Tap plugins to the number of the mixer track they sit on. It
 # never changes any other plugin or mixer value.
 
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 TAP_PREFIX = "mixbuddy tap"
 TAP_MAX = 999  # Tap ID range is 0..TAP_MAX; TAP_MAX itself means "Unassigned"
 REQUEST = "mb_request.json"
@@ -29,6 +33,11 @@ import mixer
 import plugins
 
 try:
+    import device
+except ImportError:
+    device = None
+
+try:
     import general
 except ImportError:
     general = None
@@ -37,7 +46,8 @@ try:
 except ImportError:
     ui = None
 
-_S = {"base": None, "last_id": None, "handled": 0}
+_S = {"base": None, "last_id": None, "handled": 0, "req_mtime": None,
+      "polls": 0, "poll_source": None}
 
 
 # ---------------------------------------------------------------- files
@@ -143,9 +153,25 @@ def _slot_list(t):
     return out
 
 
+def _project():
+    """Best available name for the open project. FL exposes it in different
+    places across versions, so try them in order and say which one worked."""
+    for mod, fn in ((general, "getProjectTitle"), (ui, "getProjectTitle"),
+                    (ui, "getProgTitle")):
+        f = getattr(mod, fn, None) if mod else None
+        if f is None:
+            continue
+        v = _safe(f)
+        if v:
+            return {"title": _clean(v), "source": fn}
+    return {"title": None, "source": None}
+
+
 def cmd_ping(args):
     return {
         "bridge_version": VERSION,
+        "project": _project(),
+        "polling": {"source": _S["poll_source"], "polls": _S["polls"]},
         "fl_version": _safe(ui.getVersion) if ui else None,
         "api_version": _safe(general.getVersion) if general else None,
         "track_count": _safe(mixer.trackCount),
@@ -311,6 +337,7 @@ def _serve():
     except BaseException as e:
         resp = {"id": rid, "ok": False, "error": "%s: %s" % (type(e).__name__, e)}
     resp["fl_ms"] = round((time.time() - t0) * 1000, 1)
+    resp["project"] = _project()["title"]
     try:
         _write_response(resp)
     except BaseException as e:
@@ -323,8 +350,45 @@ def _serve():
 
 # ---------------------------------------------------------------- FL callbacks
 
+def _poll(source):
+    """Serve a request if mb_request.json changed since we last looked."""
+    _S["polls"] += 1
+    if _S["poll_source"] is None:
+        _S["poll_source"] = source
+        _log("polling active via %s" % source)
+    try:
+        m = os.path.getmtime(_path(REQUEST))
+    except BaseException:
+        return
+    if m != _S["req_mtime"]:
+        _S["req_mtime"] = m
+        _serve()
+
+
 def OnInit():
     _log("MixBuddy bridge %s loaded, folder: %s" % (VERSION, _base_dir()))
+    # Ask FL for regular OnUpdateMeters calls; we use them as a poll tick.
+    if device is not None:
+        try:
+            device.setHasMeters()
+        except BaseException as e:
+            _log("setHasMeters failed: %r" % (e,))
+    # Don't replay a request left over from before this load.
+    try:
+        _S["req_mtime"] = os.path.getmtime(_path(REQUEST))
+        with open(_path(REQUEST), "r", encoding="utf-8") as f:
+            _S["last_id"] = json.loads(f.read()).get("id")
+    except BaseException:
+        pass
+    _log("open project: %s" % (_project(),))
+
+
+def OnUpdateMeters():
+    _poll("OnUpdateMeters")
+
+
+def OnIdle():
+    _poll("OnIdle")
 
 
 def OnDeInit():
