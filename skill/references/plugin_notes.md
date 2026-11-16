@@ -138,6 +138,26 @@ match: Trackspacer
 - Low-cut and High-cut limit the frequency range it works in.
 - Freeze holds the current curve.
 
+## Softube Tube-Tech CL 1B
+match: Tube-Tech CL 1B, CL 1B
+- Optical tube compressor, smooth and program-dependent.
+- Threshold "Off" disables compression completely: the plugin then only
+  passes audio (with its tube colour). Check this before assuming it levels.
+- Ratio is a fixed-step knob (e.g. 2:1 to 10:1). Gain is make-up level.
+- Attack and Release are bare knob numbers; Select Attack Release picks
+  Fixed (preset opto timing), Fixed-Manual, or Man (manual knobs).
+- Gain reduction is not a parameter; ask the user to read the plugin's
+  meter, or compare crest factor before and after.
+
+## FabFilter Pro-DS
+match: Pro-DS
+- De-esser. Mode Single Vocal (focused on one voice) or Allround.
+- Threshold sets where it reacts; Range is the most it will reduce (dB).
+- High-Pass and Low-Pass Frequency set the detection band. Above about
+  5 kHz it works on sibilance, not on presence (2-4 kHz).
+- Lookahead lets it catch the start of an "s"; Stereo Link Mode Mid
+  processes the centre.
+
 ## LiquidSonics Seventh Heaven
 match: Seventh Heaven
 - Reverb modelled on the Bricasti M7. Dry/Wet "Wet" means 100% wet: normal
