@@ -31,6 +31,10 @@ and real settings over guessing whenever they are available.
    Give settings the user can dial into their DAW/plugins.
 5. **Be concise and structured.** Lead with the diagnosis, then the fix, then
    the explanation.
+6. **Every move needs a reason.** Each proposed change names the measured
+   problem it fixes (an atlas id when one fits), like Mike Senior's
+   "compressing for a reason" and "equalising for a reason". No processing
+   "because vocals usually get it".
 
 ## Workflow
 
@@ -156,6 +160,25 @@ the full data (every band, every resonance, raw level fields) pass the optional
 For a general "improve my whole mix" request, run the **cleanup chain** in
 order: loudness -> stereo -> spectrum -> (vocal clarity if it's a vocal),
 then synthesize one prioritized action list.
+
+Order the action list by the mix stage each problem belongs to. Fix an
+earlier stage before a later one, because later moves depend on it. This
+follows the progression in Mike Senior's *Mixing Secrets For The Small
+Studio*:
+1. **Listening:** reference level-matched, check mono and a second system.
+2. **Preparation:** timing, tuning, comping, arrangement clutter.
+3. **Raw balance:** faders and pan only, most important element first.
+4. **Compression**, then other dynamics (gates, expansion, clip-gain rides).
+5. **EQ**, then frequency-selective dynamics (dynamic EQ, de-essing,
+   multiband) and side-chains (ducking, Trackspacer).
+6. **Sweetening:** reverb, then delay, then stereo enhancement.
+7. **Master bus, automation and final checks.**
+
+A reverb or master-bus fix proposed before a balance problem is solved is
+usually premature: say so, and fix the balance first.
+
+**Practice mode:** to practice, or to test mix-buddy, on raw multitracks,
+see `docs/practice_with_multitracks.md`.
 
 ### Step 3b: Use project memory for continuity
 At the start of a session about a named project, call `read_project_memory`

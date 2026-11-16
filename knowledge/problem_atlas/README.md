@@ -60,6 +60,11 @@ moves them. Sweep and measure.
 - `research:socialfx`: SocialFX (Northwestern). Crowdsourced words for EQ,
   reverb and compression: 4,297 words from 1,233 users.
   [SocialFX paper](https://pseeth.github.io/public/papers/zheng_seetharaman_pardo_acmmm.pdf).
+- `cambridge-mt`: Mike Senior's *Mixing Secrets For The Small Studio* and its
+  free resources. Its mix-stage progression (listening, preparation,
+  balance, dynamics, EQ, side-chains, sweetening, master bus) sets the
+  order mix-buddy fixes problems in.
+  [Contents](https://www.cambridge-mt.com/ms/contents).
 - `story:<name>`: a documented record made in an unconventional setting
   (see `success_stories.md`). These are cited for what the source actually
   says, never for techniques it doesn't mention.
