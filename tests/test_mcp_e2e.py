@@ -82,6 +82,10 @@ async def main():
                 "fl_analyze_track_stem",
                 "fl_list_taps",
                 "fl_analyze_track_live",
+                "fl_snapshot",
+                "archive_history",
+                "archive_note",
+                "archive_lessons",
             ])
             if names == expected:
                 print(f"  PASS  lists all {len(expected)} tools: {names}")

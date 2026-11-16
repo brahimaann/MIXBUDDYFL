@@ -122,6 +122,7 @@ def main():
         threading.Timer(0.02, lambda: fl.OnMidiMsg(Ev())).start()
 
     os.environ["MIXBUDDY_FL_DIR"] = folder
+    os.environ["MIXBUDDY_HOME"] = tempfile.mkdtemp()  # keep the real archive clean
     import fl_client
     import server
     server._fl = fl_client.FLClient(doorbell=doorbell, timeout=3)
@@ -268,6 +269,42 @@ def main():
 
     e = server.fl_get_plugin_params(1, 9)
     check("missing plugin returns an error, not a crash", "error" in e, e)
+
+    print("Session archive")
+    import archive
+    mx = sys.modules["mixer"]
+    server.fl_get_mixer()
+    old_vol = mx.getTrackVolume
+    mx.getTrackVolume = lambda i, mode=0: (-5.0 if i == 1 else -3.0) if mode == 1 else 0.7
+    m2 = server.fl_get_mixer()
+    check("fader move is reported on the next mixer read",
+          any("volume_db" in c and "lead" in c for c in m2.get("changed_since_last_read", [])), m2)
+    mx.getTrackVolume = old_vol
+    PLUGS[(1, 1)][1][0] = ("Mid Air", 0.25, "25 % ")
+    p2 = server.fl_get_plugin_params(1, 1)
+    check("hand-made plugin change is reported on the next read",
+          p2.get("changed_since_last_read") == ["track 1 'lead' Fresh Air: Mid Air 18 % -> 25 %"], p2)
+    p3 = server.fl_get_plugin_params(1, 1)
+    check("unchanged re-read reports nothing", "changed_since_last_read" not in p3, p3)
+    PLUGS[(1, 1)][1][0] = ("Mid Air", 0.3, "30 % ")
+    snap = server.fl_snapshot(label="test")
+    check("snapshot reads every plugin except taps", snap.get("plugins_read") == 5, snap)
+    check("snapshot reports changes since last seen",
+          any("Mid Air 25 % -> 30 %" in c for c in snap.get("changes", [])), snap)
+    n = server.archive_note("lesson", "Dynamic band at 1.2 kHz beat a static cut for nasal tone.",
+                            tags="vocal,nasal")
+    check("archive_note files a lesson", n.get("event", {}).get("kind") == "lesson", n)
+    bad = server.archive_note("rant", "x")
+    check("archive_note rejects unknown kinds", "error" in bad, bad)
+    ls = server.archive_lessons(tags="nasal")
+    check("lessons are searchable by tag", len(ls["lessons"]) == 1, ls)
+    proj = snap.get("project")
+    h = server.archive_history(project=proj, kinds="change")
+    check("history returns the logged changes", len(h["events"]) >= 3, h)
+    hs = server.archive_history(project=proj, kinds="snapshot")
+    check("history hides snapshot payloads", hs["events"] and "data" not in hs["events"][-1], hs)
+    check("archive lives in its own folder per project",
+          archive.slug(proj) in archive.projects(), archive.projects())
 
     server._fl = fl_client.FLClient(doorbell=lambda: None, timeout=1.2)
     t = server.fl_status()

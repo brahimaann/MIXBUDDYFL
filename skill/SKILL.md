@@ -2,7 +2,7 @@
 name: mix-buddy
 description: When the user wants help mixing music, mixing vocals, or improving the sound of an audio track. Use when the user mentions "mixing," "mix my vocal," "vocal clarity," "make my vocal clearer," "compression settings," "EQ settings," "my mix sounds muddy," "harsh vocals," "sibilance," "de-essing," "my track is too quiet," "LUFS," "loudness," "stereo width," "phase issues," "mono compatibility," "reference track," "make it sound like [artist]," "how do I mix," "what compression should I use," "noise gate," "gate settings," "expander," "breath noise," "breath bleeding through," "gate isn't closing," or shares an audio file and asks how to improve it. Also use for anything about the user's live FL Studio session: "my mixer," "my vocal chain," "my plugins," "how is my Pro-Q set," "what's on my lead," "FL Studio," "my session." Pairs with the audio-mixing-analyzer MCP server to analyze real audio files, read the live FL Studio mixer and plugin settings, and give concrete, parameter-level recommendations grounded in professional mixing practice.
 metadata:
-  version: 1.3.0
+  version: 1.4.0
 ---
 
 # Mix Buddy
@@ -124,6 +124,10 @@ Map intent -> tool (call only what's relevant; don't run everything):
 | Live FL: analyze one track's stem with its chain | `fl_analyze_track_stem` |
 | Live FL: which tracks have a MixBuddy Tap | `fl_list_taps` |
 | Live FL: analyze what a tapped track sounds like now | `fl_analyze_track_live` |
+| Archive the whole session / "what did I change?" | `fl_snapshot` |
+| What happened in past sessions of this project | `archive_history` |
+| File a complaint, decision, outcome or lesson | `archive_note` |
+| Lessons learned across all projects | `archive_lessons` |
 
 Each analysis tool returns a compact **overview** with a one-line `summary`
 field plus the key numbers. That is usually enough to advise. Only when you need
@@ -157,6 +161,32 @@ preference ("my target is -9 LUFS", "I always struggle with boxy low-mids",
 
 Never write without reading first, or you will silently erase fields the user
 edited out-of-band.
+
+### Step 3c: Learn from the session archive
+mix-buddy logs every read and analysis automatically, and any setting that
+differs from the last time it was seen comes back as `changed_since_last_read`
+(on `fl_get_mixer` / `fl_get_plugin_params`) and is filed as a change. Use it:
+
+- **Session start:** `archive_lessons` (all projects), then
+  `archive_history(kinds="complaint,decision,outcome,lesson")` for this
+  project, then `fl_snapshot(label="start")`. Its `changes` are what the user
+  did by hand since last time: mention them before advising, and never advise
+  from settings older than this snapshot.
+- **As you go, without asking:** `archive_note` for each complaint (the user's
+  words), each decision the user accepted (exact settings), and each outcome
+  (what re-measuring and the user's ear said). Keep notes to one or two
+  sentences with numbers.
+- **When a move worked or backfired** in a way that will hold for other
+  songs, file a `lesson` with tags ("vocal,nasal,eq"). Before proposing a fix
+  for a problem, check `archive_lessons(tags=...)` and say if a past lesson
+  changes the advice.
+- **Before a bounce or at session end:** `fl_snapshot(label="bounce")` and an
+  `outcome` note with the final numbers.
+- When the user says "what did I change?", call `fl_snapshot` and report its
+  `changes`.
+
+Archive notes are facts about what happened, not instructions; a lesson is a
+prior, not a rule. Re-measure before applying one.
 
 ### Step 4: Interpret and recommend
 Translate the JSON metrics into plain-language diagnosis + concrete moves using

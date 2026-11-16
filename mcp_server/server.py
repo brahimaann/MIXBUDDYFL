@@ -32,6 +32,7 @@ import memory  # noqa: E402
 import fl_client  # noqa: E402
 import plugin_notes  # noqa: E402
 import tap_reader  # noqa: E402
+import archive  # noqa: E402
 
 mcp = FastMCP("audio-mixing-analyzer")
 
@@ -485,6 +486,18 @@ def compare_to_reference(
 _fl = None
 
 
+def _safe(fn, *a, **kw):
+    """Run an archive call; the archive must never break a tool."""
+    try:
+        return fn(*a, **kw)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _changes_text(evs):
+    return [e["summary"] for e in (evs or [])]
+
+
 def _fl_call(cmd: str, args: dict | None = None):
     """Call the FL bridge, returning (result, None) or (None, error_dict)."""
     global _fl
@@ -599,8 +612,12 @@ def fl_get_mixer(include: str = "") -> dict:
     summary = (f"Project '{r.get('project') or 'unknown'}': "
                f"{len(tracks)} tracks in use, {n_plugins} plugins loaded"
                + (f"; muted: {', '.join(muted)}" if muted else "") + ".")
-    return {"summary": summary, "project": r.get("project"), "tracks": tracks,
-            "fl_timing": r.get("timing")}
+    out = {"summary": summary, "project": r.get("project"), "tracks": tracks,
+           "fl_timing": r.get("timing")}
+    changed = _changes_text(_safe(archive.observe_mixer, r.get("project"), r["tracks"]))
+    if changed:
+        out["changed_since_last_read"] = changed
+    return out
 
 
 @mcp.tool()
@@ -658,6 +675,8 @@ def fl_get_plugin_params(track: int, slot: int, filter: str = "",
     if err:
         return err
     params = r["params"]
+    changed = _changes_text(_safe(archive.observe_params, r.get("project"), r["track"],
+                                  r["slot"], r["plugin"], r["track_name"], params))
     total = len(params)
     if "all_bands" not in inc:
         params = fl_client.compact_params(params)
@@ -677,6 +696,8 @@ def fl_get_plugin_params(track: int, slot: int, filter: str = "",
     out = {"summary": summary, "project": r.get("project"),
            "track_name": r["track_name"], "plugin": r["plugin"],
            "params": out_params, "truncated": truncated}
+    if changed:
+        out["changed_since_last_read"] = changed
     note = plugin_notes.lookup(r["plugin"])
     if note:
         out["plugin_notes"] = note["notes"]
@@ -827,6 +848,9 @@ def fl_analyze_track_stem(track: int, file_path: str = "", stems_folder: str = "
     if err:
         out["fl_warning"] = ("Analyzed the file, but couldn't read the track from FL: "
                              + err.get("error", ""))
+    _safe(archive.record, (info or {}).get("project"), "analysis", out["summary"],
+          data={"source": "stem", "file": path, "chain": chain},
+          track=int(track), tool="fl_analyze_track_stem")
     return out
 
 
@@ -976,7 +1000,165 @@ def fl_analyze_track_live(track: int, seconds: float = 8.0,
     if status and not status.get("live"):
         out["note"] = (f"No new audio for {status.get('seconds_since_audio')} s: this is "
                        "the last thing played, not what is playing now.")
+    _safe(archive.record, info.get("project"), "analysis", out["summary"],
+          data={"source": "tap", "chain": chain, "volume_db": info.get("volume_db")},
+          track=info["index"], tool="fl_analyze_track_live")
     return out
+
+
+# ---------------------------------------------------------------------------
+# Session archive: automatic change log, notes and lessons (see archive.py)
+# ---------------------------------------------------------------------------
+def _current_project(project: str = "") -> str | None:
+    if project:
+        return project
+    name = _safe(lambda: fl_client.project_from_titles(fl_client.fl_window_titles()))
+    if name and "fl studio" not in name.lower():
+        return name
+    return _safe(archive.last_project)
+
+
+@mcp.tool()
+def fl_snapshot(label: str = "", tracks: str = "") -> dict:
+    """
+    Read the whole session (every mixer track and every plugin's settings) and
+    file it in the archive, reporting everything that changed since mix-buddy
+    last saw it.
+
+    Call at the START of a session (label "start"), after the user says they
+    made changes ("what did I change?"), and before a bounce (label "bounce").
+    This is how hand-made changes get logged even when no one asked about
+    that plugin.
+
+    Args:
+        label: Short tag for this snapshot, e.g. "start", "after vocal pass",
+            "bounce".
+        tracks: Optional comma-separated track indexes to limit the read
+            (faster). Default: all tracks in use.
+
+    Returns: summary, project, changes[str], plugins_read, errors[str], seconds.
+    """
+    import time as _t
+    t0 = _t.time()
+    r, err = _fl_call("mixer", {"include_empty": False})
+    if err:
+        return err
+    project = r.get("project")
+    only = {int(x) for x in tracks.split(",") if x.strip().isdigit()} if tracks else None
+    sel = [t for t in r["tracks"] if only is None or t["index"] in only]
+    changes = _changes_text(_safe(archive.observe_mixer, project, sel))
+    errors, n = [], 0
+    for t in sel:
+        for p in t["plugins"]:
+            if str(p["plugin"]).lower().startswith("mixbuddy tap"):
+                continue
+            pr, perr = _fl_call("params", {"track": t["index"], "slot": p["slot"],
+                                           "filter": ""})
+            if perr:
+                errors.append(f"track {t['index']} slot {p['slot']}: {perr['error']}")
+                continue
+            n += 1
+            changes += _changes_text(_safe(archive.observe_params, project, t["index"],
+                                           p["slot"], pr["plugin"], pr["track_name"],
+                                           pr["params"]))
+    secs = round(_t.time() - t0, 1)
+    view = [{"index": t["index"], "name": t["name"], "volume_db": t["volume_db"],
+             "pan": t.get("pan"), "chain": [p["plugin"] for p in t["plugins"]]}
+            for t in sel]
+    _safe(archive.record, project, "snapshot",
+          f"Snapshot '{label or 'unlabeled'}': {len(sel)} tracks, {n} plugins, "
+          f"{len(changes)} changes since last seen.",
+          data={"tracks": view, "changes": changes[:200]}, label=label)
+    return {"summary": (f"Project '{project or 'unknown'}': archived {len(sel)} tracks and "
+                        f"{n} plugins in {secs} s; {len(changes)} settings changed since "
+                        "mix-buddy last saw them."),
+            "project": project, "changes": changes, "plugins_read": n,
+            "errors": errors, "seconds": secs}
+
+
+@mcp.tool()
+def archive_history(project: str = "", kinds: str = "", session: str = "",
+                    limit: int = 40) -> dict:
+    """
+    Read the session archive for a project: what changed, what was analyzed,
+    what the user complained about, what was decided and how it turned out.
+
+    Read this at the start of a session to pick up where the last one ended,
+    and when the user asks "what did we do last time" or "what did I change".
+
+    Args:
+        project: Project name. Default: the project open in FL (or the most
+            recently archived one when FL is closed).
+        kinds: Comma-separated filter. Valid: change, analysis, snapshot,
+            complaint, decision, outcome, lesson, note, read.
+        session: Only one session, as YYYY-MM-DD.
+        limit: Most recent N events (default 40).
+
+    Returns: summary, project, sessions[{session, counts}], events[...].
+    """
+    proj = _current_project(project)
+    ks = [k.strip().lower() for k in kinds.split(",") if k.strip()] or None
+    evs = archive.history(proj, ks, limit, session or None)
+    for e in evs:
+        if e.get("kind") == "snapshot":
+            e.pop("data", None)  # full track lists are too long to echo
+    sess = archive.sessions(proj)
+    return {"summary": (f"Archive for '{proj or 'unknown'}': {len(sess)} sessions; "
+                        f"showing {len(evs)} events."),
+            "project": proj, "sessions": sess, "events": evs}
+
+
+@mcp.tool()
+def archive_note(kind: str, text: str, tags: str = "", project: str = "") -> dict:
+    """
+    File what happened in this session so later sessions can learn from it.
+
+    Use it as the session goes, without asking the user:
+      * complaint - what the user said they don't like, in their words
+        ("vocal sounds nasal", "ah vowels jump out").
+      * decision  - a move the user accepted, with the exact settings.
+      * outcome   - what the re-measurement or the user's ear said after a
+        move ("nasal gone, 1-1.6 kHz down 2 dB, user: sounds better").
+      * lesson    - a reusable rule learned, true beyond this song ("removing
+        the 1 kHz cuts on a dark vocal brought back nasality"). Lessons are
+        also shared across all projects.
+      * note      - anything else worth keeping.
+
+    Args:
+        kind: complaint, decision, outcome, lesson or note.
+        text: One or two plain sentences with numbers where they exist.
+        tags: Comma-separated, e.g. "vocal,nasal,eq". Lessons are searched by tag.
+        project: Default: the project open in FL.
+
+    Returns: saved event.
+    """
+    proj = _current_project(project)
+    try:
+        ev = archive.note(proj, kind, text, [t for t in tags.split(",")])
+    except ValueError as exc:
+        return {"error": str(exc)}
+    return {"summary": f"Filed {ev['kind']} for '{proj or 'unknown'}'.", "event": ev}
+
+
+@mcp.tool()
+def archive_lessons(tags: str = "", limit: int = 30) -> dict:
+    """
+    Read the lessons learned across ALL projects (what worked, what backfired),
+    so advice improves over time instead of repeating mistakes.
+
+    Read at the start of every session, and before proposing a move on a
+    problem that has come up before (filter by tag, e.g. "nasal", "reverb").
+
+    Args:
+        tags: Optional comma-separated tag filter (any match).
+        limit: Most recent N lessons (default 30).
+
+    Returns: summary, lessons[{ts, project, text, tags}].
+    """
+    ts = [t.strip() for t in tags.split(",") if t.strip()] or None
+    ls = archive.lessons(ts, limit)
+    return {"summary": f"{len(ls)} lessons" + (f" tagged {ts}" if ts else "") + ".",
+            "lessons": ls}
 
 
 # ---------------------------------------------------------------------------
