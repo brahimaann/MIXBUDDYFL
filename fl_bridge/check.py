@@ -58,11 +58,22 @@ def main():
     if m:
         res = m["result"]
         print("   round trip %s ms, FL timing %s" % (m["round_trip_ms"], res.get("timing")))
+        names = {t["index"]: t["name"] for t in res["tracks"]}
+        n_routes = 0
         for t in res["tracks"]:
             plugs = ", ".join(p["plugin"] for p in t["plugins"]) or "-"
             print("   %2d %-14s %6s dB  %s" % (t["index"], t["name"], t["volume_db"], plugs))
+            routes = t.get("routes_to") or []
+            n_routes += len(routes)
+            if routes:
+                print("      routes to: " + ", ".join(
+                    "%s (%s)" % (names.get(r["to"], r["to"]),
+                                 "?" if r.get("level_norm") is None
+                                 else "%.2f" % r["level_norm"]) for r in routes))
             if lead is None and t["plugins"] and t["index"] != 0:
                 lead = t
+        print("   routing: %d routes read%s" % (
+            n_routes, "" if n_routes else "  <-- none read: routing calls may be failing"))
 
     if lead:
         s = lead["plugins"][0]["slot"]
@@ -79,5 +90,26 @@ def main():
     print("\nAll done.")
 
 
+class _Tee:
+    """Mirror everything printed into check_output.txt next to this script."""
+    def __init__(self, path):
+        self.f = open(path, "w", encoding="utf-8")
+        self.out = sys.stdout
+
+    def write(self, s):
+        self.out.write(s)
+        self.f.write(s)
+        self.f.flush()
+
+    def flush(self):
+        self.out.flush()
+
+
 if __name__ == "__main__":
-    main()
+    sys.stdout = _Tee(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                   "check_output.txt"))
+    print("MixBuddy bridge check, " + time.strftime("%Y-%m-%d %H:%M:%S"))
+    try:
+        main()
+    except Exception as e:
+        print("\nUNEXPECTED ERROR: %r" % (e,))

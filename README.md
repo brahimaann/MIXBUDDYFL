@@ -59,7 +59,14 @@ default; pass `include` to expand detail (e.g. `include="bands,resonances"`).
 | `fl_status` | Live FL Studio connection check |
 | `fl_get_mixer` | Live mixer: tracks, faders, plugins, routing |
 | `fl_get_track_chain` | One track's insert chain in signal order |
-| `fl_get_plugin_params` | One plugin's settings in real units |
+| `fl_get_plugin_params` | One plugin's settings in real units, with plugin notes |
+| `fl_match_stems` | Map an FL "Split mixer tracks" export to mixer tracks |
+| `fl_analyze_track_stem` | Analyze one track's stem next to its live chain |
+| `fl_list_taps` | MixBuddy Tap plugins in the mixer and whether audio flows |
+| `fl_analyze_track_live` | Analyze the last seconds a tapped track played |
+
+The MixBuddy Tap plugin (`tap_plugin/`, build with `build.bat`) lets the
+server hear individual mixer tracks live.
 
 The `fl_*` tools read a live FL Studio 2025 session through a small
 controller script and a loopMIDI port. Setup: `fl_bridge/README.md`.

@@ -17,7 +17,11 @@ Run:  python mcp_server/server.py
 from __future__ import annotations
 
 import os
+import re
 import sys
+import tempfile
+
+import numpy as np
 
 from mcp.server.fastmcp import FastMCP
 
@@ -26,6 +30,8 @@ sys.path.insert(0, os.path.dirname(__file__))
 import dsp  # noqa: E402
 import memory  # noqa: E402
 import fl_client  # noqa: E402
+import plugin_notes  # noqa: E402
+import tap_reader  # noqa: E402
 
 mcp = FastMCP("audio-mixing-analyzer")
 
@@ -623,11 +629,16 @@ def fl_get_plugin_params(track: int, slot: int, filter: str = "",
             insensitive), e.g. "band 2", "threshold", "attack".
         include: Optional detail (comma-separated). Valid: "raw" (normalized
             0-1 value per parameter, needed later for exact writes),
-            "all_bands" (keep switched-off EQ bands).
+            "all_bands" (turn off trimming: unused bands/taps, inactive
+            modulators, switched-off modules and inactive dynamic-EQ settings
+            are hidden by default).
         limit: Max parameters returned (default 150).
 
+    Read `plugin_notes` before interpreting values: it says which way knobs
+    go and what bare numbers mean (e.g. CLA-76 attack 7 is the FASTEST).
+
     Returns: summary, track_name, plugin, params[{i, name, display}],
-        truncated (bool).
+        truncated (bool), plugin_notes.
     """
     inc = _parse_include(include)
     r, err = _fl_call("params", {"track": int(track), "slot": int(slot),
@@ -650,8 +661,308 @@ def fl_get_plugin_params(track: int, slot: int, filter: str = "",
                f"{len(out_params)} parameters"
                + (f" ({hidden} from switched-off bands hidden)" if hidden else "")
                + ("; truncated, narrow with `filter`" if truncated else "") + ".")
-    return {"summary": summary, "track_name": r["track_name"], "plugin": r["plugin"],
-            "params": out_params, "truncated": truncated}
+    out = {"summary": summary, "track_name": r["track_name"], "plugin": r["plugin"],
+           "params": out_params, "truncated": truncated}
+    note = plugin_notes.lookup(r["plugin"])
+    if note:
+        out["plugin_notes"] = note["notes"]
+    else:
+        out["plugin_notes"] = ("No notes for this plugin: read values literally and "
+                               "don't guess knob directions or units.")
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Stems: connect bounced audio to FL mixer tracks
+# ---------------------------------------------------------------------------
+_AUDIO_EXT = (".wav", ".aif", ".aiff", ".flac", ".ogg")
+
+
+def _norm(text: str) -> str:
+    return "".join(ch for ch in (text or "").lower() if ch.isalnum())
+
+
+def _match_stems(folder: str, tracks: list[dict]) -> dict:
+    """Map audio files in `folder` to mixer tracks by name. FL's "Split mixer
+    tracks" export names files after the project and the track, so a file
+    matches a track when its normalized name ends with the track's normalized
+    name. The longest matching track name wins (so "dbl bus" beats "bus")."""
+    files = sorted(f for f in os.listdir(folder) if f.lower().endswith(_AUDIO_EXT))
+    named = [(t["index"], t["name"], _norm(t["name"])) for t in tracks if _norm(t["name"])]
+    matched, unmatched = [], []
+    for f in files:
+        stem = _norm(os.path.splitext(f)[0])
+        best = None
+        for idx, name, key in named:
+            if stem.endswith(key) and (best is None or len(key) > len(best[2])):
+                best = (idx, name, key)
+        if best:
+            matched.append({"file": os.path.join(folder, f), "track": best[0],
+                            "track_name": best[1]})
+        else:
+            unmatched.append(f)
+    return {"matched": matched, "unmatched": unmatched}
+
+
+def _stems_folder(stems_folder: str) -> str | None:
+    return stems_folder or os.environ.get("MIXBUDDY_STEMS_DIR") or None
+
+
+@mcp.tool()
+def fl_match_stems(stems_folder: str = "") -> dict:
+    """
+    Match bounced stems in a folder to the live FL Studio mixer tracks.
+
+    In FL: File > Export > WAV with "Split mixer tracks" on writes one file
+    per mixer track. Point this at that folder to see which file belongs to
+    which track, then analyze one with fl_analyze_track_stem.
+
+    Args:
+        stems_folder: Absolute folder path. Defaults to the MIXBUDDY_STEMS_DIR
+            environment variable.
+
+    Returns: summary, matched[{file, track, track_name}], unmatched[file].
+    """
+    folder = _stems_folder(stems_folder)
+    if not folder or not os.path.isdir(folder):
+        return {"error": f"Stems folder not found: {folder!r}. Pass an absolute path."}
+    r, err = _fl_call("mixer", {"include_empty": True})
+    if err:
+        return err
+    m = _match_stems(folder, r["tracks"])
+    m["summary"] = (f"{len(m['matched'])} stems matched to mixer tracks, "
+                    f"{len(m['unmatched'])} unmatched.")
+    return m
+
+
+_STEM_ANALYSES = {
+    "loudness": analyze_loudness,
+    "dynamics": analyze_dynamics,
+    "spectrum": analyze_frequency_spectrum,
+    "vocal": analyze_vocal_clarity,
+    "stereo": analyze_stereo_compatibility,
+}
+
+
+@mcp.tool()
+def fl_analyze_track_stem(track: int, file_path: str = "", stems_folder: str = "",
+                          analyses: str = "loudness,dynamics,spectrum") -> dict:
+    """
+    Analyze the bounced audio of one FL mixer track alongside its live chain,
+    so a diagnosis can rest on measured sound AND the exact plugin settings.
+
+    Give either file_path, or a stems_folder (FL "Split mixer tracks" export)
+    and the file for this track is found by name.
+
+    Args:
+        track: Mixer track index from fl_get_mixer.
+        file_path: Absolute path to this track's stem (optional).
+        stems_folder: Folder of split-mixer-track stems (optional; defaults to
+            MIXBUDDY_STEMS_DIR).
+        analyses: Comma-separated. Valid: "loudness", "dynamics", "spectrum",
+            "vocal" (vocal clarity / mud / sibilance), "stereo".
+
+    Notes: the stem is what FL exported for that track, so it is only as
+    current as the export. Re-export after changing the mix.
+
+    Returns: summary, track{index, name, chain}, file, results{analysis:
+        overview}.
+    """
+    want = [a.strip().lower() for a in (analyses or "").split(",") if a.strip()]
+    bad = [a for a in want if a not in _STEM_ANALYSES]
+    if bad:
+        return {"error": f"Unknown analyses {bad}. Valid: {sorted(_STEM_ANALYSES)}"}
+
+    info, err = _fl_call("track", {"track": int(track)})
+    chain = None
+    if info:
+        chain = " -> ".join(s["plugin"] for s in info["slots"]) or "no plugins"
+
+    path = file_path
+    if not path:
+        folder = _stems_folder(stems_folder)
+        if not folder or not os.path.isdir(folder):
+            return {"error": "Give file_path, or a stems_folder holding an FL "
+                             "'Split mixer tracks' export."}
+        if not info:
+            return {"error": "Can't match stems by name without FL: "
+                             + (err or {}).get("error", "FL not reachable")
+                             + ". Pass file_path instead."}
+        hits = [m for m in _match_stems(folder, [{"index": info["index"],
+                                                  "name": info["name"]}])["matched"]]
+        if not hits:
+            return {"error": f"No stem in {folder} matches track {info['index']} "
+                             f"'{info['name']}'."}
+        if len(hits) > 1:
+            return {"error": "Several stems match this track; pass file_path.",
+                    "candidates": [h["file"] for h in hits]}
+        path = hits[0]["file"]
+
+    results = {}
+    for a in want:
+        results[a] = _STEM_ANALYSES[a](path)
+    lines = [f"{a}: {r.get('summary') or r.get('error')}" for a, r in results.items()]
+    name = info["name"] if info else f"track {track}"
+    out = {
+        "summary": f"Stem for '{name}' ({os.path.basename(path)}). " + " | ".join(lines),
+        "track": ({"index": info["index"], "name": info["name"], "chain": chain,
+                   "volume_db": info.get("volume_db")} if info else None),
+        "file": path,
+        "results": results,
+    }
+    if err:
+        out["fl_warning"] = ("Analyzed the file, but couldn't read the track from FL: "
+                             + err.get("error", ""))
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Live audio from MixBuddy Tap plugins
+# ---------------------------------------------------------------------------
+_TAP_NAME = "mixbuddy tap"
+
+
+def _tap_slots(tracks: list[dict]) -> list[dict]:
+    """Find MixBuddy Tap instances in a mixer snapshot and read their Tap IDs."""
+    found = []
+    for t in tracks:
+        n_slots = len(t.get("plugins") or [])
+        for pos, p in enumerate(t.get("plugins") or []):
+            if not (p.get("plugin") or "").lower().startswith(_TAP_NAME):
+                continue
+            r, err = _fl_call("params", {"track": t["index"], "slot": p["slot"],
+                                         "filter": "Tap ID"})
+            tap_id = None
+            if r:
+                for q in r["params"]:
+                    if q["name"] == "Tap ID":
+                        m = re.match(r"^\s*(\d+)", q.get("display") or "")
+                        tap_id = int(m.group(1)) if m else None
+            found.append({"track": t["index"], "track_name": t["name"], "slot": p["slot"],
+                          "tap_id": tap_id, "is_last_in_chain": pos == n_slots - 1,
+                          "error": err.get("error") if err else None})
+    return found
+
+
+@mcp.tool()
+def fl_list_taps() -> dict:
+    """
+    List MixBuddy Tap plugins in the FL mixer: which track and slot each sits
+    on, its Tap ID, and whether audio is flowing through it right now.
+
+    A tap is a passthrough plugin that lets fl_analyze_track_live hear a
+    mixer track. It hears whatever comes before it in the chain (put it last
+    for the processed sound), and insert slots sit before the fader.
+
+    Returns: summary, taps[{track, track_name, slot, tap_id, live,
+        seconds_since_audio, is_last_in_chain}], problems[str].
+    """
+    r, err = _fl_call("mixer", {"include_empty": True})
+    if err:
+        return err
+    files = {t["tap_id"]: t for t in tap_reader.list_taps()}
+    taps, problems = [], []
+    seen = {}
+    for t in _tap_slots(r["tracks"]):
+        f = files.get(t["tap_id"]) if t["tap_id"] is not None else None
+        t["live"] = bool(f and f["live"])
+        t["seconds_since_audio"] = f["seconds_since_audio"] if f else None
+        if t["tap_id"] is None:
+            problems.append(f"Couldn't read the Tap ID on '{t['track_name']}' slot {t['slot']}.")
+        elif t["tap_id"] in seen:
+            problems.append(f"Tap ID {t['tap_id']} is used on both '{seen[t['tap_id']]}' and "
+                            f"'{t['track_name']}'. Give each tap its own ID.")
+        else:
+            seen[t["tap_id"]] = t["track_name"]
+        if f is None and t["tap_id"] is not None:
+            problems.append(f"No audio file yet for Tap ID {t['tap_id']} "
+                            f"('{t['track_name']}'): press play in FL.")
+        t.pop("error", None)
+        taps.append(t)
+    live = sum(1 for t in taps if t["live"])
+    summary = (f"{len(taps)} taps found, {live} receiving audio now."
+               if taps else "No MixBuddy Tap plugins in the mixer.")
+    return {"summary": summary, "taps": taps, "problems": problems}
+
+
+@mcp.tool()
+def fl_analyze_track_live(track: int, seconds: float = 8.0,
+                          analyses: str = "loudness,dynamics,spectrum") -> dict:
+    """
+    Analyze what a mixer track sounds like right now, from the MixBuddy Tap
+    plugin on that track (the last few seconds of audio, up to 10 s).
+
+    Requires a MixBuddy Tap in one of the track's insert slots and the song
+    playing (or just played) in FL. For tracks without a tap, use
+    fl_analyze_track_stem with an export instead.
+
+    Args:
+        track: Mixer track index from fl_get_mixer.
+        seconds: How much recent audio to analyze (1-10, default 8).
+        analyses: Comma-separated. Valid: "loudness", "dynamics", "spectrum",
+            "vocal", "stereo".
+
+    Notes: the tap hears the chain up to its slot (pre-fader). If it is not
+    the last plugin, later plugins are not included; say so.
+
+    Returns: summary, track{index, name, chain}, tap{tap_id, slot,
+        is_last_in_chain, seconds_since_audio}, results{analysis: overview}.
+    """
+    want = [a.strip().lower() for a in (analyses or "").split(",") if a.strip()]
+    bad = [a for a in want if a not in _STEM_ANALYSES]
+    if bad:
+        return {"error": f"Unknown analyses {bad}. Valid: {sorted(_STEM_ANALYSES)}"}
+    seconds = max(1.0, min(float(seconds), 10.0))
+    info, err = _fl_call("track", {"track": int(track)})
+    if err:
+        return err
+    plugs = [{"slot": s["slot"], "plugin": s["plugin"]} for s in info["slots"]]
+    taps = _tap_slots([{"index": info["index"], "name": info["name"], "plugins": plugs}])
+    if not taps:
+        return {"error": f"No MixBuddy Tap on track {info['index']} '{info['name']}'. "
+                         "Add it as the last insert (or use fl_analyze_track_stem)."}
+    tap = taps[-1]
+    if tap["tap_id"] is None:
+        return {"error": "Found MixBuddy Tap but couldn't read its Tap ID."}
+    try:
+        audio, sr, _h = tap_reader.read_tap(tap["tap_id"], seconds)
+    except ValueError as exc:
+        return {"error": str(exc)}
+    status = {t["tap_id"]: t for t in tap_reader.list_taps()}.get(tap["tap_id"], {})
+    if float(np.max(np.abs(audio))) < 1e-6:
+        return {"error": "The tap captured only silence. Play the section you want "
+                         "analyzed in FL, then ask again."}
+
+    import soundfile as sf
+    fd, tmp = tempfile.mkstemp(suffix=".wav", prefix="mixbuddy_live_")
+    os.close(fd)
+    try:
+        sf.write(tmp, audio, sr, subtype="FLOAT")
+        results = {a: _STEM_ANALYSES[a](tmp) for a in want}
+    finally:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+    chain = " -> ".join(p["plugin"] for p in plugs)
+    lines = [f"{a}: {r.get('summary') or r.get('error')}" for a, r in results.items()]
+    out = {
+        "summary": (f"Live audio from '{info['name']}' ({len(audio) / sr:.1f} s via Tap "
+                    f"{tap['tap_id']}). " + " | ".join(lines)),
+        "track": {"index": info["index"], "name": info["name"], "chain": chain,
+                  "volume_db": info.get("volume_db")},
+        "tap": {"tap_id": tap["tap_id"], "slot": tap["slot"],
+                "is_last_in_chain": tap["is_last_in_chain"],
+                "seconds_since_audio": status.get("seconds_since_audio")},
+        "results": results,
+    }
+    if not tap["is_last_in_chain"]:
+        out["warning"] = ("The tap is not the last plugin, so plugins after slot "
+                          f"{tap['slot']} are not in this audio.")
+    if status and not status.get("live"):
+        out["note"] = (f"No new audio for {status.get('seconds_since_audio')} s: this is "
+                       "the last thing played, not what is playing now.")
+    return out
 
 
 # ---------------------------------------------------------------------------

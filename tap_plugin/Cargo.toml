@@ -1,0 +1,24 @@
+[package]
+name = "mixbuddy_tap"
+version = "0.1.0"
+edition = "2021"
+description = "MixBuddy Tap: passthrough plugin that shares the last seconds of audio with the mix-buddy MCP server"
+license = "GPL-3.0-or-later"
+
+[workspace]
+members = ["xtask"]
+
+[lib]
+crate-type = ["cdylib", "lib"]
+
+[features]
+default = ["vst3"]
+vst3 = ["nih_plug/vst3"]
+
+[dependencies]
+nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git", rev = "de421011f41a6d10fc8c7a6084e4f4dee0143683", default-features = false, features = ["assert_process_allocs"] }
+memmap2 = "0.9"
+
+[profile.release]
+lto = "thin"
+strip = "symbols"

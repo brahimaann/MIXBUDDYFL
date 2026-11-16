@@ -2,7 +2,7 @@
 name: mix-buddy
 description: When the user wants help mixing music, mixing vocals, or improving the sound of an audio track. Use when the user mentions "mixing," "mix my vocal," "vocal clarity," "make my vocal clearer," "compression settings," "EQ settings," "my mix sounds muddy," "harsh vocals," "sibilance," "de-essing," "my track is too quiet," "LUFS," "loudness," "stereo width," "phase issues," "mono compatibility," "reference track," "make it sound like [artist]," "how do I mix," "what compression should I use," "noise gate," "gate settings," "expander," "breath noise," "breath bleeding through," "gate isn't closing," or shares an audio file and asks how to improve it. Also use for anything about the user's live FL Studio session: "my mixer," "my vocal chain," "my plugins," "how is my Pro-Q set," "what's on my lead," "FL Studio," "my session." Pairs with the audio-mixing-analyzer MCP server to analyze real audio files, read the live FL Studio mixer and plugin settings, and give concrete, parameter-level recommendations grounded in professional mixing practice.
 metadata:
-  version: 1.1.0
+  version: 1.3.0
 ---
 
 # Mix Buddy
@@ -64,9 +64,27 @@ Read top-down, and only as deep as the question needs:
    runs first).
 3. `fl_get_plugin_params(track, slot)` - one plugin's settings exactly as the
    plugin displays them ("98.25 Hz", "-20.4 dB", "Opto"). Use `filter` to
-   narrow ("band 8", "threshold", "attack"). Switched-off EQ bands and
-   inactive dynamic-EQ settings are hidden; add `include="all_bands"` if you
-   need them.
+   narrow ("band 8", "threshold", "attack"). Unused bands/taps, inactive
+   modulators, switched-off modules and inactive dynamic-EQ settings are
+   hidden; add `include="all_bands"` if you need them.
+   **Always read the returned `plugin_notes` before interpreting values**:
+   they say which way knobs go and what bare numbers mean (CLA-76 attack 7 is
+   the fastest; CLA Vocals faders are not off at 0). If a plugin has no notes,
+   read values literally and never guess directions or units.
+4. To hear a track, use its bounced audio: `fl_match_stems(folder)` maps an
+   FL "Split mixer tracks" export to the mixer, and
+   `fl_analyze_track_stem(track, ...)` runs loudness / dynamics / spectrum /
+   vocal / stereo analysis on that track's stem next to its live chain.
+   Ask the user to export (File > Export > WAV, "Split mixer tracks" on) when
+   a diagnosis needs sound, and say the stem is only as current as the
+   export.
+5. To hear a track live, use the MixBuddy Tap plugin: `fl_list_taps` shows
+   which tracks have a tap and whether audio is flowing;
+   `fl_analyze_track_live(track)` analyzes the last few seconds that played
+   through it. Prefer this over stems when the track has a tap. The tap only
+   hears plugins before it (pre-fader), so check `is_last_in_chain`. If a
+   track has no tap, suggest adding it as the last insert with a unique
+   Tap ID.
 
 If any `fl_*` call errors, call `fl_status` and relay its message (FL open,
 loopMIDI running, MIDI input set to controller type "MixBuddy").
@@ -99,6 +117,10 @@ Map intent -> tool (call only what's relevant; don't run everything):
 | Live FL mixer: tracks, faders, plugins, routing | `fl_get_mixer` |
 | Live FL: one track's insert chain | `fl_get_track_chain` |
 | Live FL: one plugin's current settings | `fl_get_plugin_params` |
+| Live FL: map exported stems to mixer tracks | `fl_match_stems` |
+| Live FL: analyze one track's stem with its chain | `fl_analyze_track_stem` |
+| Live FL: which tracks have a MixBuddy Tap | `fl_list_taps` |
+| Live FL: analyze what a tapped track sounds like now | `fl_analyze_track_live` |
 
 Each analysis tool returns a compact **overview** with a one-line `summary`
 field plus the key numbers. That is usually enough to advise. Only when you need
@@ -154,6 +176,7 @@ Structure the answer:
 | `references/techniques.md` | Chain order, compression starting points by source, chain-order refinements, saturation stacking, effect recipes (incl. the "Brent Faiyaz" pitch/formant move), and named recipes for a full vocal-chain template and master chain. |
 | `references/static_mix_workflow.md` | **Process before plugins**: gain staging, building a balance from one element, passes and punch lists, automation rules, referencing. |
 | `references/stereo_and_space.md` | Panning strategy, making mono sources wide (Haas/short-delay), reverb and delay send architecture. |
+| `references/plugin_notes.md` | How to read each plugin the user owns: knob directions, units, what bare numbers and modes mean. Attached automatically to `fl_get_plugin_params`. |
 | `references/gating_and_expansion.md` | Gate/expander theory and the breath-bleed diagnostic order (release first, then range/ratio, then sidechain filter, threshold last). |
 
 **Reach for `static_mix_workflow.md` early.** When a user asks which plugin or
@@ -178,8 +201,9 @@ processing references once balance is genuinely the limiting factor.
   someone their low end is balanced.
 - **The `fl_*` tools read settings, not sound.** They show how plugins are
   set, not what the audio is doing. Do not claim to have heard the mix or
-  measured its tone from FL alone. For measured sound, ask for an exported
-  file (or, later, the helper plugin). Say which kind of evidence a
+  measured its tone from FL alone. For measured sound, use the track's
+  MixBuddy Tap (`fl_analyze_track_live`) or its exported stem
+  (`fl_analyze_track_stem`). Say which kind of evidence a
   recommendation rests on.
 - The mixer peak meter (`include="levels"`) is a momentary post-fader
   reading. It is meaningless if the song is not playing; never treat it as

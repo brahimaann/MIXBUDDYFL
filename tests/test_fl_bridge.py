@@ -43,13 +43,27 @@ PLUGS = {
         ("MIDI Channel 1 Aftertouch", 1.0, ""),
     ]),
     (1, 1): ("Fresh Air", [("Mid Air", 0.18, "18 % "), ("Trim", 1.0, "0.0 dB ")]),
+    (1, 2): ("CLA-76 Stereo", [("Input", 0.375, "-30.0 dB "), ("Attack", 0.4, "3.47 ")]),
+    (2, 0): ("Timeless 3", [
+        ("Delay Time", 0.3, "350.0 ms "), ("Feedback", 0.35, "35.0% "),
+        ("Delay Tap 1 Used", 0.0, "Unused "), ("Delay Tap 1 Level", 0.5, "0.00 dB "),
+        ("Filter 1 Used", 1.0, "Used "), ("Filter 1 Freq", 0.3, "200.00 Hz "),
+        ("Lo-Fi Enabled", 0.0, "Off "), ("Lo-Fi", 0.5, "50% "),
+        ("Drive Enabled", 1.0, "On "), ("Drive", 0.0, "0.00% "),
+        ("Num Active XLFOs", 0.17, "1 "), ("XLFO 1 Frequency", 0.5, "0.69 Hz "),
+        ("XLFO 1 Step 1 Value", 0.5, "0.5 "), ("XLFO 2 Frequency", 0.5, "0.53 Hz "),
+        ("Num Active XLFO 2 Steps", 0.1, "2 "),
+    ]),
+    (2, 1): ("MixBuddy Tap", [("Tap ID", 0.1, "7")]),
+    (3, 0): ("Mystery Plug", [("Amount", 0.5, "5.0 ")]),
 }
 
 
 def _fake_fl():
     mixer = types.ModuleType("mixer")
     mixer.trackCount = lambda: 4
-    mixer.getTrackName = lambda i: {0: "Master", 1: "lead", 2: "verb"}.get(i, f"Insert {i}")
+    mixer.getTrackName = lambda i: {0: "Master", 1: "lead", 2: "verb", 3: "dbl bus"}.get(
+        i, f"Insert {i}")
     mixer.getTrackVolume = lambda i, mode=0: -3.0 if mode == 1 else 0.7
     mixer.getTrackPan = lambda i: 0.0
     mixer.getTrackStereoSep = lambda i: 0.0
@@ -105,15 +119,15 @@ def main():
 
     m = server.fl_get_mixer()
     names = [t["name"] for t in m.get("tracks", [])]
-    check("mixer hides empty inserts", names == ["Master", "lead", "verb"], names)
+    check("mixer hides empty inserts", names == ["Master", "lead", "verb", "dbl bus"], names)
     lead = m["tracks"][1]
     check("mixer lists plugins in slot order",
-          [p["plugin"] for p in lead["plugins"]] == ["Pro-Q 4", "Fresh Air"])
+          [p["plugin"] for p in lead["plugins"]] == ["Pro-Q 4", "Fresh Air", "CLA-76 Stereo"])
     check("mixer resolves routing names",
           {x["to_name"] for x in lead["routes_to"]} == {"Master", "verb"}, lead["routes_to"])
 
     c = server.fl_get_track_chain(1)
-    check("track chain summary", "Pro-Q 4 -> Fresh Air" in c.get("summary", ""), c)
+    check("track chain summary", "Pro-Q 4 -> Fresh Air -> CLA-76" in c.get("summary", ""), c)
 
     p = server.fl_get_plugin_params(1, 0)
     pn = [x["name"] for x in p.get("params", [])]
@@ -131,6 +145,83 @@ def main():
     f = server.fl_get_plugin_params(1, 0, filter="frequency", include="all_bands")
     check("filter + all_bands", [x["name"] for x in f["params"]]
           == ["Band 1 Frequency", "Band 2 Frequency"], f["params"])
+
+    n = server.fl_get_plugin_params(1, 2)
+    check("plugin notes attached (CLA-76 knob direction)",
+          "7 is fastest" in n.get("plugin_notes", ""), n.get("plugin_notes"))
+    u = server.fl_get_plugin_params(3, 0)
+    check("unknown plugin says don't guess", "don't guess" in u.get("plugin_notes", ""))
+
+    t = server.fl_get_plugin_params(2, 0)
+    tn = [x["name"] for x in t["params"]]
+    check("unused delay taps hidden", "Delay Tap 1 Level" not in tn, tn)
+    check("used filters kept", "Filter 1 Freq" in tn, tn)
+    check("switched-off modules hidden", "Lo-Fi" not in tn and "Lo-Fi Enabled" in tn, tn)
+    check("switched-on modules kept", "Drive" in tn, tn)
+    check("inactive LFOs and step data hidden",
+          "XLFO 2 Frequency" not in tn and "XLFO 1 Step 1 Value" not in tn
+          and "Num Active XLFO 2 Steps" not in tn and "XLFO 1 Frequency" in tn, tn)
+
+    # --- stems ---------------------------------------------------------------
+    import numpy as np
+    import soundfile as sf
+    sdir = tempfile.mkdtemp()
+    sr = 44100
+    tt = np.arange(sr * 2) / sr
+    tone = 0.2 * np.sin(2 * np.pi * 220 * tt)
+    for fname in ("BEND DAT_lead.wav", "BEND DAT_dbl bus.wav", "BEND DAT_verb.wav",
+                  "notes.txt", "random.wav"):
+        path = os.path.join(sdir, fname)
+        if fname.endswith(".wav"):
+            sf.write(path, np.stack([tone, tone], axis=1), sr)
+        else:
+            with open(path, "w") as fh:
+                fh.write("x")
+    ms = server.fl_match_stems(sdir)
+    pairs = {os.path.basename(m["file"]): m["track_name"] for m in ms.get("matched", [])}
+    check("stems matched by track name",
+          pairs == {"BEND DAT_lead.wav": "lead", "BEND DAT_dbl bus.wav": "dbl bus",
+                    "BEND DAT_verb.wav": "verb"}, ms)
+    check("unmatched audio reported", ms.get("unmatched") == ["random.wav"], ms)
+
+    st = server.fl_analyze_track_stem(1, stems_folder=sdir, analyses="loudness,spectrum")
+    check("track stem analyzed with chain",
+          st.get("file", "").endswith("BEND DAT_lead.wav")
+          and "Pro-Q 4" in (st.get("track") or {}).get("chain", "")
+          and "integrated_loudness_lufs" in st.get("results", {}).get("loudness", {}), st)
+    bad = server.fl_analyze_track_stem(1, file_path=os.path.join(sdir, "x.wav"),
+                                       analyses="nope")
+    check("bad analysis name rejected", "error" in bad, bad)
+
+    # --- live taps -------------------------------------------------------------
+    import struct
+    import time
+    tdir = tempfile.mkdtemp()
+    os.environ["MIXBUDDY_TAP_DIR"] = tdir
+    sr, cap = 48000, 48000 * 10
+    n = sr * 3
+    tt = np.arange(n) / sr
+    frames = np.zeros((cap, 2), dtype="<f4")
+    frames[:n, 0] = 0.3 * np.sin(2 * np.pi * 330 * tt)
+    frames[:n, 1] = frames[:n, 0]
+    hdr = struct.pack("<8sIIIIII QQQQ", b"MBTAP001", 1, 7, sr, 2, cap, 0,
+                      n, int(time.time() * 1000), 1, 0)
+    with open(os.path.join(tdir, "tap_7.bin"), "wb") as fh:
+        fh.write(hdr + frames.tobytes())
+
+    lt = server.fl_list_taps()
+    tp = (lt.get("taps") or [{}])[0]
+    check("taps found with track, slot and ID",
+          tp.get("track_name") == "verb" and tp.get("slot") == 1 and tp.get("tap_id") == 7
+          and tp.get("live") is True and tp.get("is_last_in_chain") is True, lt)
+    la = server.fl_analyze_track_live(2, seconds=3, analyses="loudness,spectrum")
+    check("live analysis reads the tap",
+          (la.get("tap") or {}).get("tap_id") == 7
+          and "integrated_loudness_lufs" in la.get("results", {}).get("loudness", {})
+          and "warning" not in la, la)
+    nt = server.fl_analyze_track_live(1)
+    check("track without a tap explains what to do",
+          "No MixBuddy Tap" in nt.get("error", ""), nt)
 
     e = server.fl_get_plugin_params(1, 9)
     check("missing plugin returns an error, not a crash", "error" in e, e)

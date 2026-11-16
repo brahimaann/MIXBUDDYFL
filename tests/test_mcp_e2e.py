@@ -78,6 +78,10 @@ async def main():
                 "fl_get_mixer",
                 "fl_get_track_chain",
                 "fl_get_plugin_params",
+                "fl_match_stems",
+                "fl_analyze_track_stem",
+                "fl_list_taps",
+                "fl_analyze_track_live",
             ])
             if names == expected:
                 print(f"  PASS  lists all {len(expected)} tools: {names}")

@@ -194,43 +194,93 @@ class FLClient:
 # ---------------------------------------------------------------- shaping
 
 _BAND = re.compile(r"^Band (\d+) ")
-
-
 _DYN_WORDS = ("Dynamic", "Dynamics", "Threshold", "Attack", "Release", "Side Chain",
               "Spectral", "External Side Chain")
 _ZERO_DB = re.compile(r"^[+-]?0(\.0+)?\s*dB$")
+_USED = re.compile(r"^(.+?) (\d+) Used$")
+_NUM_ACTIVE = re.compile(r"^Num Active (.+?)s$")
+_STEP = re.compile(r"^XLFO \d+ Step \d+ ")
+_ENABLED = re.compile(r"^([A-Za-z][A-Za-z /-]*?) Enabled$")
+
+
+def _num(display):
+    m = re.match(r"^\s*(\d+)", display or "")
+    return int(m.group(1)) if m else None
 
 
 def compact_params(params: list[dict]) -> list[dict]:
-    """Shrink multi-band EQs (FabFilter Pro-Q style) for the LLM:
-      * drop every parameter of bands that are switched off ('Band N Used' = 0)
-      * on bands whose 'Dynamic Range' is 0 dB, drop the dynamic-EQ and
-        side-chain settings, which have no effect
-      * drop surround-only 'Speakers' routing
-    Plugins without 'Band N' parameters pass through unchanged."""
-    unused, static = set(), set()
+    """Shrink big plugins for the LLM without hiding anything that is active.
+
+    Rules (each only fires when the plugin exposes the matching parameter, so
+    plugins without them pass through unchanged):
+      * "<X> N Used" = 0       -> drop every "<X> N ..." parameter
+                                  (Pro-Q bands, Timeless taps/filters,
+                                  Pro-C side-chain EQ bands)
+      * "Num Active <X>s" = k  -> drop "<X> N ..." for N > k
+                                  (Saturn bands, XLFOs, EGs, XY controllers)
+      * XLFO step-sequencer values are always dropped
+      * "<Module> Enabled" = Off (module name without a number) -> drop that
+        module's settings (Timeless Lo-Fi, Diffuse, Pitch Shift...)
+      * "<X> Feedback Amount" = 0 -> drop its Feedback Frequency (Saturn)
+      * Pro-Q bands with 0 dB "Dynamic Range" -> drop dynamic/side-chain settings
+      * surround-only "Band N Speakers"
+    """
+    by_name = {p["name"]: p for p in params}
+    unused, static = set(), set()          # (prefix, n) / band numbers
+    limits = {}                            # prefix -> max active index
+    off_modules = []
+    no_feedback = set()
     for p in params:
         name = p["name"]
-        m = re.match(r"^Band (\d+) Used$", name)
+        disp = (p.get("display") or "").strip()
+        m = _USED.match(name)
         if m and (p.get("value") or 0) < 0.5:
-            unused.add(m.group(1))
+            unused.add((m.group(1), m.group(2)))
+        m = _NUM_ACTIVE.match(name)
+        if m and _num(disp) is not None:
+            limits[m.group(1)] = _num(disp)
         m = re.match(r"^Band (\d+) Dynamic Range$", name)
-        if m and _ZERO_DB.match((p.get("display") or "").strip()):
+        if m and _ZERO_DB.match(disp):
             static.add(m.group(1))
-    if not unused and not static:
-        return params
+        m = _ENABLED.match(name)
+        if m and disp.lower() == "off" and not re.search(r"\d", m.group(1)):
+            mod = m.group(1)
+            if mod in by_name or any(n.startswith(mod + " ") and n != name for n in by_name):
+                off_modules.append(mod)
+        if name.endswith(" Feedback Amount") and _num(disp) == 0:
+            no_feedback.add(name[: -len(" Amount")] + " Frequency")
+
     out = []
     for p in params:
-        m = _BAND.match(p["name"])
-        if m:
-            band = m.group(1)
-            rest = p["name"][m.end():]
-            if band in unused:
-                continue
-            if rest == "Speakers":
-                continue
-            if band in static and rest.startswith(_DYN_WORDS):
-                continue
-        out.append(p)
+        name = p["name"]
+        if _STEP.match(name):
+            continue
+        if name in no_feedback:
+            continue
+        skip = False
+        for prefix, n in unused:
+            if name.startswith(f"{prefix} {n} "):
+                skip = True
+                break
+        if not skip:
+            for prefix, k in limits.items():
+                m = re.search(rf"(?:^|[ /]){re.escape(prefix)} (\d+)(?: |/|$)", name)
+                if m and int(m.group(1)) > k:
+                    skip = True
+                    break
+        if not skip:
+            for mod in off_modules:
+                if name == mod or (name.startswith(mod + " ") and name != mod + " Enabled"):
+                    skip = True
+                    break
+        if not skip:
+            m = _BAND.match(name)
+            if m:
+                rest = name[m.end():]
+                if rest == "Speakers":
+                    skip = True
+                elif m.group(1) in static and rest.startswith(_DYN_WORDS):
+                    skip = True
+        if not skip:
+            out.append(p)
     return out
-

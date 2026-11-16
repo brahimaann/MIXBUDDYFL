@@ -17,3 +17,7 @@ Thumbs.db
 
 # FL bridge local check output
 fl_bridge/check_output.txt
+
+# Tap plugin build
+tap_plugin/target/
+tap_plugin/build_output.txt
