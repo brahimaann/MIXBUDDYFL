@@ -108,15 +108,24 @@ def _k_weighting_coeffs(fs: int):
     return b1, a1, b2, a2
 
 
-def integrated_loudness_lufs(mono: np.ndarray, fs: int) -> float:
+def integrated_loudness_lufs(samples: np.ndarray, fs: int) -> float:
     """
     Compute EBU R128 integrated loudness in LUFS with two-stage gating.
 
+    `samples` is mono (n,) or multichannel (n, channels). Per ITU-R BS.1770,
+    each channel is K-weighted and the channels' mean-square powers are
+    SUMMED (weight 1.0 for L/R). Pass the stereo samples, not a mono
+    down-mix: averaging L and R first reads stereo material ~3 dB low, and
+    lower still for wide material.
+
     Returns -70.0 for silence / too-short signals.
     """
+    x = np.asarray(samples, dtype=np.float64)
+    if x.ndim == 1:
+        x = x[:, None]
     b1, a1, b2, a2 = _k_weighting_coeffs(fs)
-    y = lfilter(b1, a1, mono)
-    y = lfilter(b2, a2, y)
+    y = lfilter(b1, a1, x, axis=0)
+    y = lfilter(b2, a2, y, axis=0)
 
     block_size = int(0.4 * fs)
     step_size = int(0.1 * fs)
@@ -128,7 +137,7 @@ def integrated_loudness_lufs(mono: np.ndarray, fs: int) -> float:
     for idx in range(num_blocks):
         start = idx * step_size
         block = y[start : start + block_size]
-        block_powers[idx] = np.mean(block ** 2)
+        block_powers[idx] = float(np.sum(np.mean(block ** 2, axis=0)))
 
     # Absolute gate at -70 LUFS.
     absolute_threshold = 10 ** (-70.0 / 10.0)
@@ -153,16 +162,20 @@ def _to_db(x: float) -> float:
     return float(20 * np.log10(max(x, 1e-10)))
 
 
-def true_peak_dbfs(mono: np.ndarray, fs: int, oversample: int = 4) -> float:
+def true_peak_dbfs(samples: np.ndarray, fs: int, oversample: int = 4) -> float:
     """
     True-peak estimate (dBTP) via 4x oversampling, per the ITU-R BS.1770
     approach. Inter-sample peaks can exceed the sample peak by ~0.1-1 dB, so
     this is the figure to use for peak-to-loudness comparisons and for
     checking headroom before lossy encoding.
+
+    `samples` is mono (n,) or (n, channels); the result is the highest peak
+    of any channel (a mono down-mix would hide one-sided peaks).
     """
-    if mono.size == 0:
+    x = np.asarray(samples, dtype=np.float64)
+    if x.size == 0:
         return -100.0
-    up = resample_poly(mono.astype(np.float64), oversample, 1)
+    up = resample_poly(x, oversample, 1, axis=0)
     return _to_db(float(np.max(np.abs(up))))
 
 

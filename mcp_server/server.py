@@ -82,7 +82,7 @@ def analyze_loudness(file_path: str, include: str = "") -> dict:
         return err
 
     inc = _parse_include(include)
-    lufs = dsp.integrated_loudness_lufs(audio.mono, audio.sample_rate)
+    lufs = dsp.integrated_loudness_lufs(audio.samples, audio.sample_rate)
 
     # Human-readable verdict against the common streaming target.
     diff = lufs - (-14.0)
@@ -96,7 +96,7 @@ def analyze_loudness(file_path: str, include: str = "") -> dict:
         verdict = "in the typical streaming range (~-14 LUFS)"
 
     # PLR contextualises the loudness: how much of it came from compression.
-    tp = dsp.true_peak_dbfs(audio.mono, audio.sample_rate)
+    tp = dsp.true_peak_dbfs(audio.samples, audio.sample_rate)
     plr = tp - lufs
     if plr < 8.0:
         density = "very dense/limited"
@@ -430,8 +430,8 @@ def compare_to_reference(
 
     inc = _parse_include(include)
 
-    t_lufs = dsp.integrated_loudness_lufs(target.mono, target.sample_rate)
-    r_lufs = dsp.integrated_loudness_lufs(reference.mono, reference.sample_rate)
+    t_lufs = dsp.integrated_loudness_lufs(target.samples, target.sample_rate)
+    r_lufs = dsp.integrated_loudness_lufs(reference.samples, reference.sample_rate)
 
     t_bands = dsp.multiband_energy(target.mono, target.sample_rate)
     r_bands = dsp.multiband_energy(reference.mono, reference.sample_rate)
