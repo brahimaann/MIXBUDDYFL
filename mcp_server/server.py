@@ -33,6 +33,7 @@ import fl_client  # noqa: E402
 import plugin_notes  # noqa: E402
 import tap_reader  # noqa: E402
 import archive  # noqa: E402
+import problem_atlas  # noqa: E402
 
 mcp = FastMCP("audio-mixing-analyzer")
 
@@ -1004,6 +1005,42 @@ def fl_analyze_track_live(track: int, seconds: float = 8.0,
           data={"source": "tap", "chain": chain, "volume_db": info.get("volume_db")},
           track=info["index"], tool="fl_analyze_track_live")
     return out
+
+
+@mcp.tool()
+def lookup_mix_problem(complaint: str, limit: int = 5, domain: str = "") -> dict:
+    """
+    Match what the user says they hear ("muddy", "nasal", "sounds like karaoke
+    on the beat", "808 disappears on my phone") to likely problems in the
+    250-entry mix problem atlas: cause, how to confirm it, fix, and what to
+    avoid.
+
+    Call this as soon as the user describes a complaint, BEFORE measuring, to
+    get candidate causes and which measurements will tell them apart. The
+    results are candidates, not a diagnosis: confirm with fl_analyze_track_live
+    / plugin reads before advising, and say which candidate the measurements
+    support.
+
+    Args:
+        complaint: The user's words, as close to verbatim as possible.
+        limit: Max candidates (default 5).
+        domain: Optional filter: room, mic-tracking, voice, low-end,
+            mids-highs, dynamics, pitch-timing-stacks, space, balance-masking,
+            levels-translation.
+
+    Returns: summary, candidates[{id, title, domain, severity, cause, check,
+        fix, avoid, evidence, matched, score}].
+    """
+    hits = problem_atlas.lookup(complaint, limit, domain)
+    keep = ("id", "title", "domain", "severity", "cause", "check", "fix", "avoid",
+            "evidence", "matched", "score")
+    cands = [{k: h[k] for k in keep if k in h} for h in hits]
+    if not cands:
+        return {"summary": "No atlas entry matches; describe what you hear in other words "
+                           "or go straight to measuring.", "candidates": []}
+    return {"summary": "Candidates: " + "; ".join(f"{c['id']} {c['title']}" for c in cands)
+                       + ". Confirm by measuring before advising.",
+            "candidates": cands}
 
 
 # ---------------------------------------------------------------------------

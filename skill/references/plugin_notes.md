@@ -13,6 +13,7 @@ directions or units.
 match: Pro-Q
 - Each band: Frequency, Gain (dB), Q, Shape (Bell, Low/High Shelf, Low/High
   Cut, Notch, Band Pass, Tilt...), Slope, Stereo Placement.
+- Band Gain runs -30 to +30 dB.
 - Q is a bare number: higher Q = narrower bell. Shelves use Q only to shape
   the curve.
 - Dynamic Range (-30 to +30 dB) makes a Bell or Shelf band dynamic. Negative =

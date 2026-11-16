@@ -86,6 +86,7 @@ async def main():
                 "archive_history",
                 "archive_note",
                 "archive_lessons",
+                "lookup_mix_problem",
             ])
             if names == expected:
                 print(f"  PASS  lists all {len(expected)} tools: {names}")

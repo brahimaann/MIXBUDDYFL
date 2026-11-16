@@ -47,6 +47,14 @@ Classify the user's intent into one or more of:
   compressor set", "why is the lead buried") -> read the live session first
   (Step 2b)
 
+### Step 1b: Translate the complaint
+When the user describes what they hear, call `lookup_mix_problem` with
+their words first. It returns candidate problems from the 250-entry atlas
+(`knowledge/problem_atlas/`), each with a cause, a check and a fix. Use the
+checks to choose what to measure, then say which candidate the
+measurements support. Never present a candidate as the diagnosis without
+measuring.
+
 ### Step 2: Get the audio (if needed)
 If the request needs measurement and no file path was given, ask for the
 **absolute path** to the audio file (WAV/AIFF/FLAC/OGG). If the user only wants
@@ -128,6 +136,7 @@ Map intent -> tool (call only what's relevant; don't run everything):
 | What happened in past sessions of this project | `archive_history` |
 | File a complaint, decision, outcome or lesson | `archive_note` |
 | Lessons learned across all projects | `archive_lessons` |
+| Map the user's words to likely problems (atlas) | `lookup_mix_problem` |
 
 Each analysis tool returns a compact **overview** with a one-line `summary`
 field plus the key numbers. That is usually enough to advise. Only when you need
