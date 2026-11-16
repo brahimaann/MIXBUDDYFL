@@ -26,7 +26,10 @@
 use nih_plug::prelude::*;
 use std::sync::Arc;
 
+pub mod editor;
 pub mod ring;
+
+use nih_plug_egui::EguiState;
 
 const CAPACITY_SECONDS: f32 = 10.0;
 /// Highest Tap ID, also the "not assigned yet" value. The controller script
@@ -35,13 +38,17 @@ pub const UNASSIGNED: i32 = 999;
 
 pub struct MixBuddyTap {
     params: Arc<TapParams>,
+    shared: Arc<editor::Shared>,
     sample_rate: f32,
     ring: Option<ring::Ring>,
     open_id: i32,
 }
 
 #[derive(Params)]
-struct TapParams {
+pub struct TapParams {
+    #[persist = "editor-state"]
+    pub editor_state: Arc<EguiState>,
+
     /// Which tap file this instance writes: the mixer track number, set
     /// automatically by FL's MixBuddy controller script.
     #[id = "tapid"]
@@ -51,6 +58,7 @@ struct TapParams {
 impl Default for TapParams {
     fn default() -> Self {
         Self {
+            editor_state: editor::default_state(),
             tap_id: IntParam::new("Tap ID", UNASSIGNED,
                                   IntRange::Linear { min: 0, max: UNASSIGNED })
                 .with_value_to_string(Arc::new(|v| {
@@ -68,6 +76,7 @@ impl Default for MixBuddyTap {
     fn default() -> Self {
         Self {
             params: Arc::new(TapParams::default()),
+            shared: Arc::new(editor::Shared::default()),
             sample_rate: 44100.0,
             ring: None,
             open_id: 0,
@@ -83,11 +92,13 @@ impl MixBuddyTap {
             Ok(r) => {
                 self.ring = Some(r);
                 self.open_id = id;
+                self.shared.file_ok.store(true, std::sync::atomic::Ordering::Relaxed);
             }
             Err(e) => {
                 nih_log!("MixBuddy Tap: could not open tap file: {e}");
                 self.ring = None;
                 self.open_id = id;
+                self.shared.file_ok.store(false, std::sync::atomic::Ordering::Relaxed);
             }
         }
     }
@@ -121,6 +132,10 @@ impl Plugin for MixBuddyTap {
         self.params.clone()
     }
 
+    fn editor(&mut self, _async_executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
+        editor::create(self.params.clone(), self.shared.clone())
+    }
+
     fn initialize(
         &mut self,
         _layout: &AudioIOLayout,
@@ -145,13 +160,20 @@ impl Plugin for MixBuddyTap {
         if self.params.tap_id.value() != self.open_id {
             nih_plug::util::permit_alloc(|| self.open());
         }
+        let slices = buffer.as_slice_immutable();
+        let (l, r): (&[f32], &[f32]) = match slices.len() {
+            0 => (&[], &[]),
+            1 => (slices[0], slices[0]),
+            _ => (slices[0], slices[1]),
+        };
         if let Some(ring) = self.ring.as_mut() {
-            let slices = buffer.as_slice_immutable();
-            match slices.len() {
-                0 => {}
-                1 => ring.write(slices[0], slices[0]),
-                _ => ring.write(slices[0], slices[1]),
-            }
+            ring.write(l, r);
+        }
+        // Meter for the window (only the plugin's own window reads these).
+        if !l.is_empty() {
+            let pk = |x: &[f32]| x.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+            self.shared.set_peaks(pk(l), pk(r));
+            self.shared.last_audio_ms.store(editor::now_ms(), std::sync::atomic::Ordering::Relaxed);
         }
         // Audio is left untouched: this is a passthrough.
         ProcessStatus::Normal

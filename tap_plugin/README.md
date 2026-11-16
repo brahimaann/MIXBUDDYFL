@@ -7,7 +7,8 @@ mixer track while the song plays (`fl_list_taps`, `fl_analyze_track_live`).
 
 ## Build and install (Windows)
 
-Double-click `build.bat`. It builds the VST3 and CLAP versions with Cargo,
+Close FL Studio first (Windows won't replace a plugin FL has loaded), then
+double-click `build.bat`. It builds the VST3 and CLAP versions with Cargo,
 then copies them to `C:\Program Files\Common Files\VST3` and `...\CLAP`
 (Windows asks for admin rights). The log goes to `build_output.txt`.
 
@@ -20,6 +21,9 @@ Needs Rust (rustup) and the MSVC linker (Visual Studio Build Tools,
 2. Add **MixBuddy Tap** as the **last** insert on each track you want Claude
    to hear (it hears everything before it in the chain, before the fader).
 3. Play the song and ask Claude about the track.
+
+Open the plugin to see its window: the track it is assigned to, whether
+audio is reaching mix-buddy, and a level meter.
 
 You don't set anything on the plugin. Its **Tap ID** shows "Unassigned"
 until mix-buddy first looks for taps; the MixBuddy controller script then
