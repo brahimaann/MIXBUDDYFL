@@ -181,7 +181,10 @@ def observe_params(project, track: int, slot: int, plugin: str, track_name: str,
     state = _load_state(project)
     allp = state.setdefault("params", {})
     key = f"{int(track)}:{int(slot)}"
-    cur = {p["name"]: str(p.get("display") or "").strip() for p in params if p.get("name")}
+    # A parameter FL could not render (display None/empty) is unknown, not a
+    # change: never compare it, and never overwrite the last good value with it.
+    cur = {p["name"]: str(p["display"]).strip() for p in params
+           if p.get("name") and p.get("display") is not None and str(p["display"]).strip()}
     prev = allp.get(key)
     changes = []
     if prev and prev.get("plugin") == plugin:

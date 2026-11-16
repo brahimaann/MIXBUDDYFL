@@ -306,6 +306,19 @@ def main():
     check("archive lives in its own folder per project",
           archive.slug(proj) in archive.projects(), archive.projects())
 
+    real_vs = sys.modules["plugins"].getParamValueString
+    sys.modules["plugins"].getParamValueString = lambda *a, **k: (_ for _ in ()).throw(RuntimeError())
+    nd = server.fl_get_plugin_params(1, 1)
+    check("a read with no display values is an error, not data", "error" in nd, nd)
+    sys.modules["plugins"].getParamValueString = real_vs
+    before = archive.history(proj, ["change"], 1000)
+    archive.observe_params(proj, 1, 1, "Fresh Air", "lead",
+                           [{"name": "Mid Air", "display": None}])
+    after = archive.history(proj, ["change"], 1000)
+    check("missing display values are never logged as changes", len(after) == len(before))
+    p4 = server.fl_get_plugin_params(1, 1)
+    check("last good value survives a failed read", "changed_since_last_read" not in p4, p4)
+
     server._fl = fl_client.FLClient(doorbell=lambda: None, timeout=1.2)
     t = server.fl_status()
     check("no answer from FL gives a helpful error",

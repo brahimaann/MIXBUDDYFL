@@ -676,6 +676,11 @@ def fl_get_plugin_params(track: int, slot: int, filter: str = "",
     if err:
         return err
     params = r["params"]
+    if params and all(p.get("display") is None for p in params):
+        return {"error": f"FL returned no display values for {r['plugin']} on track "
+                         f"{r['track']} slot {r['slot']} (a transient read failure). Read it "
+                         "again; don't interpret this read.",
+                "project": r.get("project")}
     changed = _changes_text(_safe(archive.observe_params, r.get("project"), r["track"],
                                   r["slot"], r["plugin"], r["track_name"], params))
     total = len(params)
@@ -1093,6 +1098,10 @@ def fl_snapshot(label: str = "", tracks: str = "") -> dict:
                                            "filter": ""})
             if perr:
                 errors.append(f"track {t['index']} slot {p['slot']}: {perr['error']}")
+                continue
+            if pr["params"] and all(q.get("display") is None for q in pr["params"]):
+                errors.append(f"track {t['index']} slot {p['slot']} {pr['plugin']}: FL returned "
+                              "no display values; read it again")
                 continue
             n += 1
             changes += _changes_text(_safe(archive.observe_params, project, t["index"],
