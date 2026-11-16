@@ -15,7 +15,7 @@
 # MixBuddy Tap plugins to the number of the mixer track they sit on. It
 # never changes any other plugin or mixer value.
 
-VERSION = "0.3.1"
+VERSION = "0.3.2"
 TAP_PREFIX = "mixbuddy tap"
 TAP_MAX = 999  # Tap ID range is 0..TAP_MAX; TAP_MAX itself means "Unassigned"
 REQUEST = "mb_request.json"
@@ -348,12 +348,11 @@ def _serve():
     try:
         with open(_path(REQUEST), "r", encoding="utf-8") as f:
             req = json.loads(f.read())
-    except BaseException as e:
-        _log("could not read request: %s: %s" % (type(e).__name__, e))
-        return
+    except BaseException:
+        return False  # file is mid-write or locked; the caller retries
     rid = req.get("id")
     if rid is None or rid == _S["last_id"]:
-        return  # nothing new
+        return True  # nothing new
     _S["last_id"] = rid
     cmd = req.get("cmd")
     t0 = time.time()
@@ -389,8 +388,10 @@ def _poll(source):
     except BaseException:
         return
     if m != _S["req_mtime"]:
-        _S["req_mtime"] = m
-        _serve()
+        # Only mark the file as seen once it could be read; a writer may
+        # still hold it, in which case the next tick tries again.
+        if _serve() is not False:
+            _S["req_mtime"] = m
 
 
 def OnInit():
@@ -411,8 +412,11 @@ def OnInit():
     _log("open project: %s" % (_project(),))
     _log("project name candidates: %s" % (_project_candidates(),))
     if device is not None:
+        def _dev(fn):
+            f = getattr(device, fn, None)
+            return _safe(f) if f else "n/a"
         _log("device: assigned=%s port=%s name=%s" % (
-            _safe(device.isAssigned), _safe(device.getPortNumber), _safe(device.getName)))
+            _dev("isAssigned"), _dev("getPortNumber"), _dev("getName")))
 
 
 def OnUpdateMeters():
